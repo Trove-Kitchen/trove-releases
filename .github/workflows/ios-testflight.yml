@@ -1,0 +1,241 @@
+name: Trove iOS
+
+# Builds Trove from samuelalake/Munch on a free public-repo macOS runner,
+# signs it with App Store Connect automatic signing, and either validates the
+# result with Apple (the default) or sends it to TestFlight.
+#
+# Source never lives here. Two read-only deploy keys clone it:
+#   TROVE_MUNCH_READ_KEY      -> samuelalake/Munch
+#   TROVE_COMMERCE_READ_KEY   -> samuelalake/munch-commerce
+# Apple credentials live in the `trove-ios` environment, not in the app repo.
+#
+# dry_run: true  -> archive, export, and `altool --validate-app`. Apple runs the
+#                   full upload check and publishes nothing. Nothing reaches
+#                   TestFlight and no tester sees anything.
+# dry_run: false -> the same, then `altool --upload-app`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and validate with Apple, but do not upload
+        required: true
+        type: boolean
+        default: true
+      build_number:
+        description: CFBundleVersion for this build (must be unused)
+        required: true
+        type: string
+      ref:
+        description: Munch ref to build
+        required: false
+        default: main
+        type: string
+
+concurrency:
+  group: trove-ios
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    environment: trove-ios
+    timeout-minutes: 90
+    env:
+      TEAM_ID: R6A892D599
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Give each deploy key its own SSH host
+        env:
+          MUNCH_KEY: ${{ secrets.TROVE_MUNCH_READ_KEY }}
+          COMMERCE_KEY: ${{ secrets.TROVE_COMMERCE_READ_KEY }}
+        run: |
+          # Both repos live on github.com, so one agent holding two keys can hit
+          # "too many authentication failures". A host alias per key avoids it.
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$MUNCH_KEY"    > ~/.ssh/munch    && chmod 600 ~/.ssh/munch
+          printf '%s\n' "$COMMERCE_KEY" > ~/.ssh/commerce && chmod 600 ~/.ssh/commerce
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          cat > ~/.ssh/config <<'CFG'
+          Host munch.github.com
+            HostName github.com
+            User git
+            IdentityFile ~/.ssh/munch
+            IdentitiesOnly yes
+          Host commerce.github.com
+            HostName github.com
+            User git
+            IdentityFile ~/.ssh/commerce
+            IdentitiesOnly yes
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Clone the app and the grocery package
+        run: |
+          git clone --depth 1 --branch "${{ inputs.ref }}" \
+            git@munch.github.com:samuelalake/Munch.git app
+          git clone --depth 1 \
+            git@commerce.github.com:samuelalake/munch-commerce.git app/munch-commerce
+          echo "Munch     $(git -C app rev-parse --short HEAD)"
+          echo "commerce  $(git -C app/munch-commerce rev-parse --short HEAD)"
+
+      - name: Write the Apple key where Xcode and altool each look
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+        run: |
+          for n in KEY_ID ISSUER_ID KEY_P8; do
+            if [ -z "${!n}" ]; then echo "Missing secret APP_STORE_CONNECT_${n}"; exit 1; fi
+          done
+          if ! printf '%s' "$ISSUER_ID" | grep -Eq '^[0-9a-fA-F-]{36}$'; then
+            echo "APP_STORE_CONNECT_ISSUER_ID must be the 36-character Issuer ID, not the team id."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/private" "$HOME/.appstoreconnect/private_keys"
+          printf '%s\n' "$KEY_P8" > "$RUNNER_TEMP/private/AuthKey_${KEY_ID}.p8"
+          if ! head -1 "$RUNNER_TEMP/private/AuthKey_${KEY_ID}.p8" | grep -q 'BEGIN PRIVATE KEY'; then
+            echo "APP_STORE_CONNECT_API_KEY_P8 is not a PKCS#8 private key."
+            exit 1
+          fi
+          # altool only reads this exact filename from this exact directory.
+          cp "$RUNNER_TEMP/private/AuthKey_${KEY_ID}.p8" "$HOME/.appstoreconnect/private_keys/"
+          chmod 600 "$RUNNER_TEMP/private/AuthKey_${KEY_ID}.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+          echo "APPLE_KEY_PATH=$RUNNER_TEMP/private/AuthKey_${KEY_ID}.p8" >> "$GITHUB_ENV"
+          echo "KEY_ID=$KEY_ID"       >> "$GITHUB_ENV"
+          echo "ISSUER_ID=$ISSUER_ID" >> "$GITHUB_ENV"
+
+      - name: Prove the Apple credentials work before building anything
+        run: |
+          # Fails in seconds if the key, issuer or role is wrong, instead of
+          # after a 30-minute build.
+          xcrun altool --list-apps --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID" > "$RUNNER_TEMP/apps.txt" 2>&1 || {
+            cat "$RUNNER_TEMP/apps.txt"; echo "Apple rejected these credentials."; exit 1; }
+          echo "Apple accepted the credentials."
+
+      - name: Write the app config
+        working-directory: app
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          RESOLVER_BASE_URL: ${{ secrets.RESOLVER_BASE_URL }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::warning::No Supabase secrets in this environment. The build will"
+            echo "::warning::compile and sign, but the app would not reach a backend."
+            echo "::warning::Fine for a dry run; set them before any real upload."
+          fi
+          python3 - <<'PY'
+          import os
+          def setting(name, value):
+              # xcconfig treats // as a comment, so a URL has to be split.
+              return f"{name} = {value.replace('//', '$(SLASH)$(SLASH)')}\n"
+          resolver = os.environ.get("RESOLVER_BASE_URL") or "https://trove-video-resolver-production.up.railway.app"
+          text  = "SLASH = /\n"
+          text += setting("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
+          text += setting("SUPABASE_ANON_KEY", os.environ.get("SUPABASE_ANON_KEY", ""))
+          text += setting("RESOLVER_BASE_URL", resolver)
+          open("Munch/Supabase.xcconfig", "w", encoding="utf-8").write(text)
+          print("Wrote Munch/Supabase.xcconfig")
+          PY
+
+      - name: Point the project at the checked-out grocery package
+        working-directory: app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          project = Path("Munch.xcodeproj/project.pbxproj")
+          text = project.read_text(encoding="utf-8")
+          drive = "/Volumes/SatechiSSD/Developer/Apps/Swift/munch-commerce"
+          if drive in text:
+              project.write_text(text.replace(drive, "munch-commerce"), encoding="utf-8")
+              print("Repointed the local package reference.")
+          else:
+              print("No local package path to repoint.")
+          PY
+
+      - name: Show the Xcode on this Mac
+        run: xcodebuild -version
+
+      - name: Archive
+        working-directory: app
+        run: |
+          xcodebuild \
+            -workspace Munch.xcworkspace \
+            -scheme Munch \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Munch.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$APPLE_KEY_PATH" \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER_ID" \
+            CURRENT_PROJECT_VERSION="${{ inputs.build_number }}" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            archive
+
+      - name: Export a signed build
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Munch.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$APPLE_KEY_PATH" \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER_ID"
+          IPA=$(find "$RUNNER_TEMP/export" -name '*.ipa' | head -n 1)
+          [ -n "$IPA" ] || { echo "Export produced no .ipa — signing did not complete."; exit 1; }
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
+          echo "Signed build: $(basename "$IPA")"
+
+      - name: Validate with Apple (dry run — publishes nothing)
+        if: ${{ inputs.dry_run }}
+        run: |
+          log="$RUNNER_TEMP/validate.log"
+          set +e
+          xcrun altool --validate-app --file "$IPA" --type ios \
+            --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID" > "$log" 2>&1
+          code=$?
+          set -e
+          cat "$log"
+          # altool can exit 0 on a failed send, so the text is what counts.
+          if [ $code -ne 0 ] || grep -qiE '^\s*Error|\*\*\* Error' "$log"; then
+            echo "Apple rejected the build at validation."; exit 1
+          fi
+          echo "Apple validated the build. Nothing was uploaded."
+
+      - name: Upload to TestFlight
+        if: ${{ !inputs.dry_run }}
+        run: |
+          log="$RUNNER_TEMP/upload.log"
+          set +e
+          xcrun altool --upload-app --file "$IPA" --type ios \
+            --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID" > "$log" 2>&1
+          set -e
+          cat "$log"
+          # The accepted line is the only result that counts; altool can print a
+          # failed send and still exit 0.
+          grep -F -q 'UPLOAD SUCCEEDED' "$log" || { echo "TestFlight did not accept the build."; exit 1; }
+          echo "TestFlight accepted the build."
