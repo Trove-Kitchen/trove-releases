@@ -1,11 +1,11 @@
 name: Trove iOS
 
-# Builds Trove from samuelalake/Munch on a free public-repo macOS runner,
+# Builds Trove from Trove-Kitchen/trove-app on a free public-repo macOS runner,
 # signs it with App Store Connect automatic signing, and either validates the
 # result with Apple (the default) or sends it to TestFlight.
 #
 # Source never lives here. Two read-only deploy keys clone it:
-#   TROVE_MUNCH_READ_KEY      -> samuelalake/Munch
+#   TROVE_MUNCH_READ_KEY      -> Trove-Kitchen/trove-app
 #   TROVE_COMMERCE_READ_KEY   -> samuelalake/munch-commerce
 # Apple credentials live in the `trove-ios` environment, not in the app repo.
 #
@@ -80,7 +80,7 @@ jobs:
       - name: Clone the app and the grocery package
         run: |
           git clone --depth 1 --branch "${{ inputs.ref }}" \
-            git@munch.github.com:samuelalake/Munch.git app
+            git@munch.github.com:Trove-Kitchen/trove-app.git app
           git clone --depth 1 \
             git@commerce.github.com:samuelalake/munch-commerce.git app/munch-commerce
           echo "Munch     $(git -C app rev-parse --short HEAD)"
