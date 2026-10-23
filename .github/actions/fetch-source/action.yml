@@ -1,0 +1,81 @@
+name: Fetch Trove source
+description: >
+  Clone samuelalake/Munch at a ref (and, for iOS, samuelalake/munch-commerce)
+  through the read-only deploy keys, quietly, into $RUNNER_TEMP/trove-source.
+  Prints the short commit only. Source never leaves the runner.
+inputs:
+  ref:
+    description: Munch branch, tag or 40-character commit
+    required: true
+  munch_key:
+    description: TROVE_MUNCH_READ_KEY
+    required: true
+  commerce_key:
+    description: TROVE_COMMERCE_READ_KEY (iOS only; leave empty for Android)
+    required: false
+    default: ''
+outputs:
+  sha:
+    description: The full commit that was fetched
+    value: ${{ steps.clone.outputs.sha }}
+runs:
+  using: composite
+  steps:
+    - name: Give each deploy key its own SSH host
+      shell: bash
+      env:
+        MUNCH_KEY: ${{ inputs.munch_key }}
+        COMMERCE_KEY: ${{ inputs.commerce_key }}
+      run: |
+        if [ -z "$MUNCH_KEY" ]; then echo "Missing secret TROVE_MUNCH_READ_KEY"; exit 1; fi
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        printf '%s\n' "$MUNCH_KEY" > ~/.ssh/munch && chmod 600 ~/.ssh/munch
+        ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+        {
+          printf 'Host munch.github.com\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/munch\n  IdentitiesOnly yes\n'
+          if [ -n "$COMMERCE_KEY" ]; then
+            printf '%s\n' "$COMMERCE_KEY" > ~/.ssh/commerce && chmod 600 ~/.ssh/commerce
+            printf 'Host commerce.github.com\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/commerce\n  IdentitiesOnly yes\n'
+          fi
+        } > ~/.ssh/config
+        chmod 600 ~/.ssh/config
+
+    - name: Clone quietly
+      id: clone
+      shell: bash
+      env:
+        REF: ${{ inputs.ref }}
+        WITH_COMMERCE: ${{ inputs.commerce_key != '' }}
+      run: |
+        # A ref is a branch, tag or commit; refuse anything that could be read as an option.
+        if ! printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$'; then
+          echo "ref must be a branch, tag or commit"; exit 1
+        fi
+        src="$RUNNER_TEMP/trove-source"
+        rm -rf "$src" && mkdir -p "$src"
+        git -C "$src" init -q
+        git -C "$src" remote add origin git@munch.github.com:samuelalake/Munch.git
+        git -C "$src" fetch -q --depth 1 origin "$REF"
+        git -C "$src" checkout -q FETCH_HEAD
+        if [ "$WITH_COMMERCE" = "true" ]; then
+          git clone -q --depth 1 git@commerce.github.com:samuelalake/munch-commerce.git "$src/munch-commerce"
+        fi
+        sha="$(git -C "$src" rev-parse HEAD)"
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        echo "Munch $sha"
+
+    - name: Ready the iOS project for a credential-free build
+      if: inputs.commerce_key != ''
+      shell: bash
+      working-directory: ${{ runner.temp }}/trove-source
+      run: |
+        # Supabase.xcconfig is gitignored; an empty one builds an app that reaches no backend.
+        [ -f Munch/Supabase.xcconfig ] || printf 'SUPABASE_URL =\nSUPABASE_ANON_KEY =\n' > Munch/Supabase.xcconfig
+        python3 - <<'PY'
+        from pathlib import Path
+        project = Path("Munch.xcodeproj/project.pbxproj")
+        text = project.read_text(encoding="utf-8")
+        drive = "/Volumes/SatechiSSD/Developer/Apps/Swift/munch-commerce"
+        if drive in text:
+            project.write_text(text.replace(drive, "munch-commerce"), encoding="utf-8")
+        PY

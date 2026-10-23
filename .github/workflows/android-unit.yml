@@ -1,0 +1,87 @@
+name: Trove Android unit tests
+
+# Runs the Android app's unit tests (:app:testDebugUnitTest) at a Munch ref on
+# a free Linux runner. Like the iOS compile, this log shows pass/fail and
+# counts only; failing test names and messages go to the Munch pull request.
+
+run-name: 'Trove Android unit tests of ${{ inputs.ref }}${{ inputs.pr_number && format('' (Munch #{0})'', inputs.pr_number) || '''' }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Munch branch, tag or commit
+        required: true
+        default: main
+        type: string
+      pr_number:
+        description: Munch pull request to post the result on (optional)
+        required: false
+        type: string
+
+concurrency:
+  group: trove-android-unit-${{ inputs.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    environment: trove-compile
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ inputs.ref }}
+          munch_key: ${{ secrets.TROVE_MUNCH_READ_KEY }}
+
+      - name: Run the unit tests without any credential
+        id: test
+        working-directory: ${{ runner.temp }}/trove-source/android
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          set +e
+          gradle --no-daemon --console=plain :app:testDebugUnitTest > "$RUNNER_TEMP/private/gradle.log" 2>&1
+          status=$?
+          set -e
+          python3 -I "$GITHUB_WORKSPACE/tools/report.py" junit app/build/test-results "$RUNNER_TEMP/private/errors.md"
+          python3 -I "$GITHUB_WORKSPACE/tools/report.py" xcode "$RUNNER_TEMP/private/gradle.log" "$RUNNER_TEMP/private/compile.md" >/dev/null
+          if [ $status -ne 0 ] && [ ! -s "$RUNNER_TEMP/private/errors.md" ]; then
+            # No test failed, so the build itself did: Kotlin errors read "e: file:///path:line:col message".
+            grep -E '^e: ' "$RUNNER_TEMP/private/gradle.log" \
+              | sed -E "s#file://$RUNNER_TEMP/trove-source/##; s/^e: /- /" | head -50 > "$RUNNER_TEMP/private/errors.md" || true
+            [ -s "$RUNNER_TEMP/private/errors.md" ] || echo "- The Gradle build failed before any test ran." > "$RUNNER_TEMP/private/errors.md"
+          fi
+          echo "android unit: $([ $status -eq 0 ] && echo passed || echo failed)"
+          [ $status -eq 0 ] && echo "ok=true" >> "$GITHUB_OUTPUT" || echo "ok=false" >> "$GITHUB_OUTPUT"
+
+      - name: Post the result on the Munch pull request, never in this log
+        if: always() && steps.test.outcome == 'success'
+        env:
+          TROVE_MUNCH_PR_COMMENT_TOKEN: ${{ secrets.TROVE_MUNCH_PR_COMMENT_TOKEN }}
+          PR: ${{ inputs.pr_number }}
+          SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          python3 -I tools/report.py post "Android unit tests" "$RUNNER_TEMP/private/errors.md" "$PR" "$SHA"
+          [ "${{ steps.test.outputs.ok }}" = "true" ]
+
+      - name: Remove private source and logs
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private"

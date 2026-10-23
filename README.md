@@ -15,6 +15,21 @@ GitHub bills macOS runners at **10× the Linux rate** on private repositories �
 
 Being public costs nothing here because there is no source and no readable secret: GitHub encrypts secrets, and a pull request from a fork never receives them.
 
+## Workflows
+
+| Workflow | Runner | Needs | What it proves |
+| --- | --- | --- | --- |
+| **Trove iOS** (`ios-testflight.yml`) | macOS | `trove-ios` | Archive, sign, validate with Apple; upload when `dry_run` is off |
+| **Trove iOS compile** (`ios-compile.yml`) | macOS | `trove-compile` | The app compiles for the simulator and MunchMatching tests pass, with no signing |
+| **Trove Android unit tests** (`android-unit.yml`) | Linux | `trove-compile` | `:app:testDebugUnitTest` passes |
+| **Trove iOS renders** (`ios-renders.yml`) | macOS | `trove-compile` | Screenshots of each tab, light and dark, sealed with age |
+
+The three check workflows take a Munch `ref` and, optionally, a Munch `pr_number`. They are built for agents that have no Mac: dispatch one at a branch and read the result.
+
+### Nothing from Munch is printed here
+
+This repository is public and Munch is private. The check workflows keep build and test logs on the runner, print pass/fail and counts, and post the details (path:line and the compiler's or test's message, never source) only as a comment on the Munch pull request (`tools/report.py`). Screenshots are encrypted to an age public key before upload. Private source, logs and products are deleted at the end of every job.
+
 ## Running it
 
 **Actions → Trove iOS → Run workflow.**
@@ -46,6 +61,13 @@ Optional, and only needed before a real upload — without them the app builds a
 - `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `RESOLVER_BASE_URL`
 
 The key is dedicated to this pipeline, so it can be revoked without disturbing the `GitHub TestFlight` key used by the existing workflow in `Munch`.
+
+`trove-compile` environment (no required reviewer; check runs need no approval):
+
+- `TROVE_MUNCH_READ_KEY`, `TROVE_COMMERCE_READ_KEY` — the same read-only deploy keys
+- `TROVE_MUNCH_PR_COMMENT_TOKEN` — optional; a fine-grained token on `samuelalake/Munch` with **Pull requests: write** only. Without it, results stay pass/fail in the log.
+
+Repository variable `TROVE_RENDERS_AGE_RECIPIENT` — an age public key (`age-keygen`); keep the private half off GitHub.
 
 ## Guard rails
 
