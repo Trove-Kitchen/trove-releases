@@ -6,7 +6,7 @@ name: Trove iOS
 #
 # Source never lives here. Two read-only deploy keys clone it:
 #   TROVE_MUNCH_READ_KEY      -> Trove-Kitchen/trove-app
-#   TROVE_COMMERCE_READ_KEY   -> samuelalake/munch-commerce
+#   TROVE_COMMERCE_READ_KEY   -> Trove-Kitchen/trove-commerce
 # Apple credentials live in the `trove-ios` environment, not in the app repo.
 #
 # dry_run: true  -> archive, export, and `altool --validate-app`. Apple runs the
@@ -82,7 +82,7 @@ jobs:
           git clone --depth 1 --branch "${{ inputs.ref }}" \
             git@munch.github.com:Trove-Kitchen/trove-app.git app
           git clone --depth 1 \
-            git@commerce.github.com:samuelalake/munch-commerce.git app/munch-commerce
+            git@commerce.github.com:Trove-Kitchen/trove-commerce.git app/munch-commerce
           echo "Munch     $(git -C app rev-parse --short HEAD)"
           echo "commerce  $(git -C app/munch-commerce rev-parse --short HEAD)"
 
