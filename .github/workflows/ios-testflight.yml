@@ -121,15 +121,20 @@ jobs:
           SUPABASE_URL: ${{ inputs.backend == 'staging' && secrets.STAGING_SUPABASE_URL || secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ inputs.backend == 'staging' && secrets.STAGING_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
           RESOLVER_BASE_URL: ${{ inputs.backend == 'staging' && secrets.STAGING_RESOLVER_BASE_URL || secrets.RESOLVER_BASE_URL }}
-          STAGING_SUPABASE_URL_CHECK: ${{ secrets.STAGING_SUPABASE_URL }}
+          HAS_STAGING_URL: ${{ secrets.STAGING_SUPABASE_URL != '' }}
+          HAS_STAGING_ANON: ${{ secrets.STAGING_SUPABASE_ANON_KEY != '' }}
+          HAS_STAGING_RESOLVER: ${{ secrets.STAGING_RESOLVER_BASE_URL != '' }}
         run: |
           echo "Backend: ${{ inputs.backend }}"
           # `a && b || c` falls back to production when a staging secret is
           # empty, so a staging build must prove it points at staging.
-          if [ "${{ inputs.backend }}" = staging ] && \
-             [ "$SUPABASE_URL" != "$STAGING_SUPABASE_URL_CHECK" ]; then
-            echo "STAGING_* secrets are missing from trove-ios; refusing to build staging against production."
-            exit 1
+          if [ "${{ inputs.backend }}" = staging ]; then
+            for has in "$HAS_STAGING_URL" "$HAS_STAGING_ANON" "$HAS_STAGING_RESOLVER"; do
+              if [ "$has" != true ]; then
+                echo "A STAGING_* secret is missing from trove-ios; refusing to build staging against production."
+                exit 1
+              fi
+            done
           fi
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
             echo "::warning::No Supabase secrets in this environment. The build will"
