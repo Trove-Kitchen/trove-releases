@@ -4,9 +4,9 @@ name: Trove iOS
 # signs it with App Store Connect automatic signing, and either validates the
 # result with Apple (the default) or sends it to TestFlight.
 #
-# Source never lives here. Two read-only deploy keys clone it:
-#   TROVE_MUNCH_READ_KEY      -> Trove-Kitchen/trove-app
-#   TROVE_COMMERCE_READ_KEY   -> Trove-Kitchen/trove-commerce
+# Source never lives here. The trove-kitchen-ci GitHub App (contents: read,
+# installed on trove-app and trove-commerce only) mints a short-lived token
+# per run to clone it: TROVE_CI_APP_ID + TROVE_CI_APP_PRIVATE_KEY.
 # Apple credentials live in the `trove-ios` environment, not in the app repo.
 #
 # dry_run: true  -> archive, export, and `altool --validate-app`. Apple runs the
@@ -26,6 +26,12 @@ on:
         description: CFBundleVersion for this build (must be unused)
         required: true
         type: string
+      backend:
+        description: Which backend the build talks to
+        required: true
+        type: choice
+        options: [production, staging]
+        default: production
       ref:
         description: Munch ref to build
         required: false
@@ -52,37 +58,26 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Give each deploy key its own SSH host
-        env:
-          MUNCH_KEY: ${{ secrets.TROVE_MUNCH_READ_KEY }}
-          COMMERCE_KEY: ${{ secrets.TROVE_COMMERCE_READ_KEY }}
-        run: |
-          # Both repos live on github.com, so one agent holding two keys can hit
-          # "too many authentication failures". A host alias per key avoids it.
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$MUNCH_KEY"    > ~/.ssh/munch    && chmod 600 ~/.ssh/munch
-          printf '%s\n' "$COMMERCE_KEY" > ~/.ssh/commerce && chmod 600 ~/.ssh/commerce
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          cat > ~/.ssh/config <<'CFG'
-          Host munch.github.com
-            HostName github.com
-            User git
-            IdentityFile ~/.ssh/munch
-            IdentitiesOnly yes
-          Host commerce.github.com
-            HostName github.com
-            User git
-            IdentityFile ~/.ssh/commerce
-            IdentitiesOnly yes
-          CFG
-          chmod 600 ~/.ssh/config
+      - name: Mint a read-only token for the source repos
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app,trove-commerce
 
       - name: Clone the app and the grocery package
+        env:
+          TOKEN: ${{ steps.source-token.outputs.token }}
+          REF: ${{ inputs.ref }}
         run: |
-          git clone --depth 1 --branch "${{ inputs.ref }}" \
-            git@munch.github.com:Trove-Kitchen/trove-app.git app
-          git clone --depth 1 \
-            git@commerce.github.com:Trove-Kitchen/trove-commerce.git app/munch-commerce
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          git -c http.extraheader="$auth" clone --depth 1 --branch "$REF" \
+            https://github.com/Trove-Kitchen/trove-app.git app
+          git -c http.extraheader="$auth" clone --depth 1 \
+            https://github.com/Trove-Kitchen/trove-commerce.git app/munch-commerce
           echo "Munch     $(git -C app rev-parse --short HEAD)"
           echo "commerce  $(git -C app/munch-commerce rev-parse --short HEAD)"
 
@@ -123,10 +118,19 @@ jobs:
       - name: Write the app config
         working-directory: app
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          RESOLVER_BASE_URL: ${{ secrets.RESOLVER_BASE_URL }}
+          SUPABASE_URL: ${{ inputs.backend == 'staging' && secrets.STAGING_SUPABASE_URL || secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ inputs.backend == 'staging' && secrets.STAGING_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
+          RESOLVER_BASE_URL: ${{ inputs.backend == 'staging' && secrets.STAGING_RESOLVER_BASE_URL || secrets.RESOLVER_BASE_URL }}
+          STAGING_SUPABASE_URL_CHECK: ${{ secrets.STAGING_SUPABASE_URL }}
         run: |
+          echo "Backend: ${{ inputs.backend }}"
+          # `a && b || c` falls back to production when a staging secret is
+          # empty, so a staging build must prove it points at staging.
+          if [ "${{ inputs.backend }}" = staging ] && \
+             [ "$SUPABASE_URL" != "$STAGING_SUPABASE_URL_CHECK" ]; then
+            echo "STAGING_* secrets are missing from trove-ios; refusing to build staging against production."
+            exit 1
+          fi
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
             echo "::warning::No Supabase secrets in this environment. The build will"
             echo "::warning::compile and sign, but the app would not reach a backend."
