@@ -86,6 +86,9 @@ jobs:
           cat "$RUNNER_TEMP/private/swift-test.log" >> "$RUNNER_TEMP/private/build.log"
           python3 -I "$GITHUB_WORKSPACE/tools/report.py" xcode "$RUNNER_TEMP/private/build.log" "$RUNNER_TEMP/private/errors.md"
           echo "app build: $([ $status -eq 0 ] && echo passed || echo failed)"
+          # The share extension is its own target, embedded in the app; say so explicitly.
+          appex="$(find "$RUNNER_TEMP/derived/Build/Products" -path '*Munch.app/PlugIns/MunchShareExtension.appex' -maxdepth 4 2>/dev/null | head -1)"
+          echo "share extension: $([ -n "$appex" ] && [ -f "$appex/MunchShareExtension" ] && echo "built and embedded" || echo "not built")"
           echo "MunchMatching tests: $([ $tests -eq 0 ] && echo passed || echo failed) ($(grep -Eo 'Executed [0-9]+ tests?, with [0-9]+ failures?' "$RUNNER_TEMP/private/swift-test.log" | tail -1))"
           if [ $status -ne 0 ] && [ ! -s "$RUNNER_TEMP/private/errors.md" ]; then
             echo "- The build failed without a compiler error (signing, packages or project settings)." > "$RUNNER_TEMP/private/errors.md"
