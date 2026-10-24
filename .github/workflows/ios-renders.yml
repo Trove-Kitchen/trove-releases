@@ -97,7 +97,8 @@ jobs:
             local name="$1"; shift
             xcrun simctl terminate "$udid" "$BUNDLE_ID" 2>/dev/null || true
             echo "== $name" >> "$out/launch.log"
-            env "$@" xcrun simctl launch "$udid" "$BUNDLE_ID" MUNCH_SKIP_ONBOARDING >> "$out/launch.log" 2>&1 || echo "launch failed: $?" >> "$out/launch.log"
+            # The unsigned build has no iCloud entitlement, so CloudKit stays off.
+            env SIMCTL_CHILD_MUNCH_DISABLE_CLOUDKIT=1 "$@" xcrun simctl launch "$udid" "$BUNDLE_ID" MUNCH_SKIP_ONBOARDING >> "$out/launch.log" 2>&1 || echo "launch failed: $?" >> "$out/launch.log"
             sleep 8
             if xcrun simctl spawn "$udid" launchctl list 2>/dev/null | grep -q "$BUNDLE_ID"; then
               echo "running" >> "$out/launch.log"
