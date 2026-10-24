@@ -12,6 +12,8 @@ mkdir -p "$out" "$RUNNER_TEMP/private"
 if [ "$platform" = android ]; then
   app_id=com.adestudios.trove
   adb install -r "$app" > "$RUNNER_TEMP/private/install.log" 2>&1 || { echo "android: install failed"; exit 0; }
+  # A freshly booted emulator's launcher often raises "isn't responding" over the app.
+  adb shell settings put global hide_error_dialogs 1 > /dev/null 2>&1 || true
 else
   app_id=ade-studios.Munch-RKCK
   xcrun simctl install booted "$app" > "$RUNNER_TEMP/private/install.log" 2>&1 || { echo "ios: install failed"; exit 0; }
