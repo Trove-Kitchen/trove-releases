@@ -1,0 +1,102 @@
+name: Trove Android unit tests
+
+# Runs the Android app's unit tests (:app:testDebugUnitTest) at a trove-app ref on
+# a free Linux runner. Like the iOS compile, this log shows pass/fail and
+# counts only; failing test names and messages go to the trove-app pull request.
+
+run-name: 'Trove Android unit tests of ${{ inputs.ref || ''main'' }}${{ inputs.pr_number && format('' (trove-app #{0})'', inputs.pr_number) || '''' }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: trove-app branch, tag or commit
+        required: true
+        default: main
+        type: string
+      pr_number:
+        description: trove-app pull request to post the result on (optional)
+        required: false
+        type: string
+  # Changing this check runs it once on its own pull request, against trove-app main.
+  # Pull requests from forks get no secrets, so they cannot reach the source.
+  pull_request:
+    paths:
+      - .github/workflows/android-unit.yml
+      - .github/actions/fetch-source/**
+      - tools/report.py
+
+concurrency:
+  group: trove-android-unit-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Run the unit tests without any credential
+        id: test
+        working-directory: ${{ runner.temp }}/trove-source/android
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          set +e
+          gradle --no-daemon --console=plain :app:testDebugUnitTest > "$RUNNER_TEMP/private/gradle.log" 2>&1
+          status=$?
+          set -e
+          python3 -I "$GITHUB_WORKSPACE/tools/report.py" junit app/build/test-results "$RUNNER_TEMP/private/errors.md"
+          python3 -I "$GITHUB_WORKSPACE/tools/report.py" xcode "$RUNNER_TEMP/private/gradle.log" "$RUNNER_TEMP/private/compile.md" >/dev/null
+          if [ $status -ne 0 ] && [ ! -s "$RUNNER_TEMP/private/errors.md" ]; then
+            # No test failed, so the build itself did: Kotlin errors read "e: file:///path:line:col message".
+            grep -E '^e: ' "$RUNNER_TEMP/private/gradle.log" \
+              | sed -E "s#file://$RUNNER_TEMP/trove-source/##; s/^e: /- /" | head -50 > "$RUNNER_TEMP/private/errors.md" || true
+            [ -s "$RUNNER_TEMP/private/errors.md" ] || echo "- The Gradle build failed before any test ran." > "$RUNNER_TEMP/private/errors.md"
+          fi
+          echo "android unit: $([ $status -eq 0 ] && echo passed || echo failed)"
+          [ $status -eq 0 ] && echo "ok=true" >> "$GITHUB_OUTPUT" || echo "ok=false" >> "$GITHUB_OUTPUT"
+
+      - name: Post the result on the trove-app pull request, never in this log
+        if: always() && steps.test.outcome == 'success'
+        env:
+          TROVE_PR_COMMENT_TOKEN: ${{ secrets.TROVE_PR_COMMENT_TOKEN }}
+          PR: ${{ inputs.pr_number }}
+          SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          python3 -I tools/report.py post "Android unit tests" "$RUNNER_TEMP/private/errors.md" "$PR" "$SHA"
+          [ "${{ steps.test.outputs.ok }}" = "true" ]
+
+      - name: Remove private source and logs
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private"

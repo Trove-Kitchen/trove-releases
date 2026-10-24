@@ -1,0 +1,68 @@
+name: Fetch Trove source
+description: >
+  Clone Trove-Kitchen/trove-app at a ref (and, for iOS, Trove-Kitchen/trove-commerce)
+  with a trove-kitchen-ci token, quietly, into $RUNNER_TEMP/trove-source.
+  Prints the short commit only. Source never leaves the runner.
+inputs:
+  ref:
+    description: trove-app branch, tag or 40-character commit
+    required: true
+  token:
+    description: A trove-kitchen-ci installation token (actions/create-github-app-token)
+    required: true
+  with_commerce:
+    description: Also clone trove-commerce into munch-commerce/ and ready the iOS project
+    required: false
+    default: 'false'
+outputs:
+  sha:
+    description: The full commit that was fetched
+    value: ${{ steps.clone.outputs.sha }}
+runs:
+  using: composite
+  steps:
+    - name: Clone quietly
+      id: clone
+      shell: bash
+      env:
+        REF: ${{ inputs.ref }}
+        TOKEN: ${{ inputs.token }}
+        WITH_COMMERCE: ${{ inputs.with_commerce }}
+      run: |
+        # A ref is a branch, tag or commit; refuse anything that could be read as an option.
+        if ! printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$'; then
+          echo "ref must be a branch, tag or commit"; exit 1
+        fi
+        if [ -z "$TOKEN" ]; then echo "No trove-kitchen-ci token"; exit 1; fi
+        auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+        echo "::add-mask::$auth"
+        src="$RUNNER_TEMP/trove-source"
+        rm -rf "$src" && mkdir -p "$src"
+        git -C "$src" init -q
+        git -C "$src" remote add origin https://github.com/Trove-Kitchen/trove-app.git
+        # fetch accepts a branch, a tag or a full commit, unlike clone --branch.
+        git -C "$src" -c http.extraheader="$auth" fetch -q --depth 1 origin "$REF"
+        git -C "$src" checkout -q FETCH_HEAD
+        if [ "$WITH_COMMERCE" = "true" ]; then
+          git -c http.extraheader="$auth" clone -q --depth 1 \
+            https://github.com/Trove-Kitchen/trove-commerce.git "$src/munch-commerce"
+        fi
+        sha="$(git -C "$src" rev-parse HEAD)"
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        echo "trove-app $sha"
+
+    - name: Ready the iOS project for a credential-free build
+      if: inputs.with_commerce == 'true'
+      shell: bash
+      working-directory: ${{ runner.temp }}/trove-source
+      run: |
+        # Supabase.xcconfig is gitignored; an empty one builds an app that reaches no backend.
+        [ -f Munch/Supabase.xcconfig ] || printf 'SUPABASE_URL =\nSUPABASE_ANON_KEY =\n' > Munch/Supabase.xcconfig
+        python3 - <<'PY'
+        from pathlib import Path
+        project = Path("Munch.xcodeproj/project.pbxproj")
+        text = project.read_text(encoding="utf-8")
+        drive = "/Volumes/SatechiSSD/Developer/Apps/Swift/munch-commerce"
+        if drive in text:
+            project.write_text(text.replace(drive, "munch-commerce"), encoding="utf-8")
+        PY
