@@ -96,6 +96,9 @@ jobs:
             exit 1
           fi
 
+      - name: Install AXe (reads the simulator's accessibility tree)
+        run: brew install cameroncooke/axe/axe >/dev/null 2>&1 && axe --version || echo "AXe unavailable"
+
       - name: Screenshot the tabs and the component gallery, light and dark
         env:
           DEVICE: ${{ inputs.device }}
@@ -120,6 +123,8 @@ jobs:
               echo "NOT running after 8s" >> "$out/launch.log"
             fi
             xcrun simctl io "$udid" screenshot "$out/$name.png" >/dev/null 2>&1
+            # The goal screens' accessibility trees, for the library check below.
+            case "$name" in components-*) ;; *) axe describe-ui --udid "$udid" > "$out/$name.ax.json" 2>/dev/null || true ;; esac
           }
           for appearance in light dark; do
             xcrun simctl ui "$udid" appearance "$appearance"
@@ -134,6 +139,9 @@ jobs:
             done
           done
           echo "$(ls "$out"/*.png | wc -l | tr -d ' ') screenshots, $(grep -c 'NOT running' "$out/launch.log" || true) without the app running"
+          # Every button on the goal screens is a library component or a spec exception:
+          # each marks itself with a trove. accessibility identifier. Names and counts only.
+          python3 -I "$GITHUB_WORKSPACE/tools/ax_check.py" "$out" || true
           # Crash reports stay private: they go to trove-renders with the screenshots.
           find ~/Library/Logs/DiagnosticReports -name '*Munch*' -newer "$app" -exec cp {} "$out/" \; 2>/dev/null || true
           xcrun simctl spawn "$udid" log show --last 15m --style compact --predicate 'process == "Munch"' > "$out/app.log" 2>/dev/null || true
