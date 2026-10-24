@@ -104,6 +104,14 @@ button { font: inherit; color: inherit; }
 .label .ico { width: 14px; height: 14px; }
 .player { display: flex; justify-content: center; align-items: center; box-sizing: border-box; height: 424px; padding: 20px 16px; background: var(--canvas-subtle); border-bottom: 1px solid var(--border); }
 .phone { position: relative; height: 368px; max-width: 100%; flex: none; aspect-ratio: 9 / 19.5; box-shadow: 0 0 0 4px #1f2328; border-radius: 14px; margin: 4px; overflow: hidden; background: #ffffff; display: flex; align-items: center; justify-content: center; }
+.pgroup { display: grid; gap: 8px; margin-bottom: 16px; }
+.pgroup-h { margin: 0; font-size: 14px; font-weight: 600; color: var(--fg-muted); }
+.cards-web { grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); }
+.card.wide .player { height: auto; padding: 24px 32px; }
+.phone.browser { height: auto; width: 100%; max-width: 960px; border-radius: 8px; box-shadow: 0 0 0 1px var(--border); padding-top: 28px;
+  background: #ffffff linear-gradient(#f6f8fa, #f6f8fa) top / 100% 28px no-repeat; }
+.phone.browser::before { content: ""; position: absolute; top: 10px; left: 12px; width: 8px; height: 8px; border-radius: 50%;
+  background: #d1d9e0; box-shadow: 14px 0 0 #d1d9e0, 28px 0 0 #d1d9e0; }
 .phone video, .phone img { width: 100%; height: 100%; object-fit: contain; display: block; background: #ffffff; }
 .phone .empty { color: #59636e; text-align: center; padding: 16px; font-size: 13px; }
 .phone .empty strong { display: block; color: #1f2328; font-size: 14px; margin-bottom: 2px; }
@@ -122,7 +130,7 @@ button { font: inherit; color: inherit; }
 .rail-next { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
 .prs { display: flex; flex-direction: column; gap: 2px; }
 .prrow { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-.plat { font-size: 12px; color: var(--fg-muted); }
+.plat { font-size: 12px; color: var(--fg-muted); white-space: nowrap; }
 .rail .pr { white-space: nowrap; display: inline-block; font-family: var(--mono); font-size: 12px; margin-right: 6px; }
 .nonote { color: var(--fg-muted); }
 .hist { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-muted); }
@@ -179,7 +187,7 @@ button { font: inherit; color: inherit; }
   function runOf(folder) { return D.runs.filter(function (x) { return x.folder === folder; })[0] || null; }
   var LBL = { pass: 'Passing', partial: 'Partly passing', fail: 'Failing', skipped: 'Switched off', none: 'No test yet' };
   // Platforms are a list (review-pages 1.3): each flow names its own; their titles and screen shapes come with the data.
-  var PL = {}, SH = {}, ASPECT = {}; D.platforms.forEach(function (p) { PL[p.id] = p.title; SH[p.id] = p.short; ASPECT[p.id] = p.aspect; });
+  var PL = {}, SH = {}, ASPECT = {}, WIDE = {}, CARD = {}, GROUP = {}; D.platforms.forEach(function (p) { PL[p.id] = p.title; SH[p.id] = p.short; ASPECT[p.id] = p.aspect; WIDE[p.id] = !!p.wide; CARD[p.id] = p.card || p.title; GROUP[p.id] = p.group; });
   function names(set) { var ks = Object.keys(set); return ks.length === D.platforms.length ? 'All' : ks.map(function (k) { return SH[k]; }).join(', '); }
   var SVG = {
     fail: '<svg class="ico fail" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
@@ -258,7 +266,7 @@ button { font: inherit; color: inherit; }
 
   function card(sid, p) {
     var r = R(p + '/' + sid), st = r ? r.verdict : 'none';
-    var ph = el('div', { class: 'phone', style: 'aspect-ratio: ' + (ASPECT[p] || '9 / 19.5') }), pl = el('div', { class: 'player' }, [ph]);
+    var ph = el('div', { class: WIDE[p] ? 'phone browser' : 'phone', style: 'aspect-ratio: ' + (ASPECT[p] || '9 / 19.5') }), pl = el('div', { class: 'player' }, [ph]);
     if (r && r.preview) {
       // A preview is a release asset downloaded beside the page; when it is not there, the end screen shows instead.
       var v = el('video', { playsinline: '', preload: 'metadata', poster: r.thumb || '', 'aria-label': PL[p] + ' recording of ' + sid });
@@ -278,8 +286,9 @@ button { font: inherit; color: inherit; }
     }
     var links = el('div', { class: 'links' });
     if (r && r.video) { var dl = el('a', { class: 'btn btn-sm', href: r.video, target: '_blank', rel: 'noopener' }); dl.innerHTML = '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8M4.5 6.8L8 10.3l3.5-3.5M2.5 13.5h11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'; dl.appendChild(document.createTextNode('Download recording')); links.appendChild(dl); }
-    return el('div', { class: 'card' }, [
-      el('div', { class: 'card-h' }, [PL[p], el('span', { class: 'label ' + st }, [icon(st), r ? (st === 'pass' ? 'Passed' : st === 'fail' ? 'Failed' : LBL[st]) : 'Not run'])]),
+    // A wide platform (the desktop web) takes its own full row in a browser frame, at its real proportions.
+    return el('div', { class: WIDE[p] ? 'card wide' : 'card' }, [
+      el('div', { class: 'card-h' }, [CARD[p], el('span', { class: 'label ' + st }, [icon(st), r ? (st === 'pass' ? 'Passed' : st === 'fail' ? 'Failed' : LBL[st]) : 'Not run'])]),
       pl,
       el('div', { class: 'card-b' }, [r && r.headline ? el('strong', { text: r.headline }) : null, r && r.note ? el('p', { text: r.note }) : null, links])
     ]);
@@ -340,7 +349,13 @@ button { font: inherit; color: inherit; }
       } else {
         var sid = f.scenarios[0];
         content.appendChild(history(sid, f.platforms));
-        content.appendChild(el('div', { class: 'cards' }, f.platforms.map(function (p) { return card(sid, p); })));
+        // Platforms in labelled groups (Mobile, Web), each its own grid; the desktop card takes the web row's spare width.
+        D.groups.forEach(function (g) {
+          var ps = f.platforms.filter(function (p) { return GROUP[p] === g.id; });
+          if (!ps.length) return;
+          content.appendChild(el('section', { class: 'pgroup', 'aria-label': g.title }, [el('h3', { class: 'pgroup-h', text: g.title }),
+            el('div', { class: 'cards' + (g.id === 'web' ? ' cards-web' : '') }, ps.map(function (p) { return card(sid, p); }))]));
+        });
       }
     }
     var ol = null;

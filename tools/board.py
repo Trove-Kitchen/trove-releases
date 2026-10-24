@@ -28,6 +28,10 @@ HISTORY = 15
 WIDTH = 360
 PLATFORMS = ("ios", "android", "web", "desktop")
 SHORT = {"ios": "iOS", "android": "Android", "web": "Web", "desktop": "Desktop"}
+# Cards sit in labelled groups; inside a group a card is titled by what differs within it.
+GROUPS = [{"id": "mobile", "title": "Mobile"}, {"id": "web", "title": "Web"}]
+GROUP = {"ios": "mobile", "android": "mobile", "web": "web", "desktop": "web"}
+CARD = {"web": "Phone width", "desktop": "Desktop"}
 ASPECT = {"ios": "393 / 852", "android": "412 / 915", "web": "390 / 844", "desktop": "1280 / 900"}
 KINDS = {"device-tests": ("ios", "android"), "web-flows": ("web",)}
 FOLDER = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{12}")
@@ -63,7 +67,8 @@ def checked_flows(data):
     for p in data.get("platforms", []):
         if not (isinstance(p, dict) and p.get("id") in PLATFORMS and text(p.get("title"), 40)):
             raise BoardError("flows.json has a malformed platform")
-        platforms.append({"id": p["id"], "title": p["title"], "short": SHORT[p["id"]], "aspect": ASPECT[p["id"]]})
+        platforms.append({"id": p["id"], "title": p["title"], "short": SHORT[p["id"]], "aspect": ASPECT[p["id"]],
+                          "wide": p["id"] == "desktop", "group": GROUP[p["id"]], "card": CARD.get(p["id"], p["title"])})
     known = {p["id"] for p in platforms}
     flows, ids = [], set()
     for f in data["flows"]:
@@ -216,7 +221,7 @@ def build(renders, flows_json, now=None):
         board_flows.append({"id": f["id"], "title": f["title"], "parent": None, "scenarios": [f["id"]],
                             "platforms": plats, "state": state, "means": f["goal"], "last_pass": last,
                             "components": [], "next": [], "changed": [], "issue": None})
-    data = {"platforms": platforms, "flows": board_flows,
+    data = {"platforms": platforms, "groups": GROUPS, "flows": board_flows,
             "results": dict({"latest": latest}, **{k: v for k, v in results.items()}),
             "runs": [{"folder": k, "date": date_of(r["folder"]), "run": r["run"], "archived": False}
                      for k, r in zip(order, history)]}
