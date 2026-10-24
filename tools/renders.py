@@ -41,6 +41,10 @@ SHA = re.compile(r"[0-9a-f]{40}")
 # inside the encrypted archive.
 COMMITTED = (".png", ".jpg", ".xml")
 RECORDING = (".mp4", ".webm", ".mov")
+# The exception: small previews of the recordings the runner's previewable.txt names, those that never film the
+# test password being typed (tools/previewable.py). Parts of one recording ("01-sign-in", "01-sign-in--2") join.
+PREVIEW_NAME = re.compile(r"[A-Za-z0-9_-]+")
+PREVIEW_MAX = 8 * 1024 * 1024
 
 
 def temp() -> Path:
@@ -129,6 +133,34 @@ def safe_extract(archive: Path, dest: Path) -> None:
             if member.isfile() and member.size > 200 * 1024 * 1024:
                 continue
             tar.extract(member, dest, filter="data")
+
+
+def previews(src: Path, dest: Path) -> list[Path]:
+    """Small MP4 previews under dest/previews/, one per recording previewable.txt allows, or none without ffmpeg."""
+    allowed = src / "previewable.txt"
+    if not allowed.is_file() or not shutil.which("ffmpeg"):
+        return []
+    parts: dict[str, list[Path]] = {}
+    for name in allowed.read_text().split():
+        found = sorted(src.rglob(f"{name}.mp4")) if PREVIEW_NAME.fullmatch(name) else []
+        if found:
+            parts.setdefault(name.split("--")[0], []).append(found[0])
+    made = []
+    for key, files in sorted(parts.items()):
+        out = dest / "previews" / f"{key}.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        inputs = [a for f in files for a in ("-i", str(f))]
+        joined = "".join(f"[{i}:v]scale=360:-2,fps=12,setsar=1[v{i}];" for i in range(len(files)))
+        graph = joined + "".join(f"[v{i}]" for i in range(len(files))) + f"concat=n={len(files)}:v=1:a=0[out]"
+        result = subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]",
+                                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "32", "-pix_fmt", "yuv420p",
+                                 "-movflags", "+faststart", "-an", str(out)], capture_output=True)
+        if result.returncode or not out.is_file() or out.stat().st_size > PREVIEW_MAX:
+            out.unlink(missing_ok=True)
+            print(f"preview {key}: not made")
+            continue
+        made.append(out)
+    return made
 
 
 def decrypt(sealed: Path, plain_dir: Path) -> bool:
@@ -238,6 +270,9 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
                     (tree / rel).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(f, tree / rel)
                     files.setdefault(p, []).append(rel.as_posix())
+            if src.is_dir():
+                for f in previews(src, tree / p):
+                    files.setdefault(p, []).append(f.relative_to(tree).as_posix())
         shutil.rmtree(plain, ignore_errors=True)
     else:
         print("::notice::TROVE_RENDERS_AGE_KEY is not set: committing verdicts only; the encrypted archives go to the release.")

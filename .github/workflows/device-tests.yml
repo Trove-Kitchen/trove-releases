@@ -312,7 +312,7 @@ jobs:
           owner: Trove-Kitchen
           repositories: trove-renders
 
-      - run: sudo apt-get install -y -qq age > /dev/null
+      - run: sudo apt-get install -y -qq age ffmpeg > /dev/null
 
       - uses: actions/download-artifact@v4
         with:

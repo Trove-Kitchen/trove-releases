@@ -15,6 +15,8 @@ if [ "$platform" = android ]; then
   adb install -r "$app" > "$RUNNER_TEMP/private/install.log" 2>&1 || { echo "android: install failed"; exit 0; }
   # A freshly booted emulator's launcher often raises "isn't responding" over the app.
   adb shell settings put global hide_error_dialogs 1 > /dev/null 2>&1 || true
+  # Never echo the last typed character of a password field.
+  adb shell settings put system show_password 0 > /dev/null 2>&1 || true
 else
   app_id=ade-studios.Munch-RKCK
   xcrun simctl install booted "$app" > "$RUNNER_TEMP/private/install.log" 2>&1 || { echo "ios: install failed"; exit 0; }
@@ -40,5 +42,7 @@ if [ ! -s "$out/report.xml" ]; then
 fi
 echo "$platform: maestro exited $status"
 python3 -I "$tools/check_account_plan.py" "$platform" || true
+# The recordings that never film the password being typed; only these become clear previews at publish.
+python3 -I "$tools/previewable.py" "$src/flows" > "$out/previewable.txt" || true
 # Screenshots and recordings from the flows are written to the working directory.
 exit 0

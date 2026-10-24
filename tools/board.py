@@ -12,7 +12,9 @@ Inputs, all data, never code:
   <test>-phone/ and <test>-desktop/, whose screenshot is test-finished-1.png or test-failed-1.png.
 
 A run folder is named after the trove-app commit, so a later run of the same commit replaces its platform's files:
-only the newest run per (folder, platform) is read. End screens become small JPEGs under board/media/<folder>/.
+only the newest run per (folder, platform) is read. End screens become small JPEGs under board/media/<folder>/, and a
+phone flow's clear preview (renders.py: <platform>/previews/NN-*.mp4, matched by its screenshots' NN- number) is
+copied beside them.
 Run: python3 -I tools/board.py <trove-renders> <flows.json>
 """
 import datetime
@@ -122,8 +124,16 @@ def newest_png(paths):
     return files[-1] if files else None
 
 
+def preview_for(folder_dir, platform, flow_dir):
+    """The flow's clear preview (renders.py), found by the number its screenshots start with ("01-..."), or None."""
+    shots = sorted(p.name for p in (flow_dir / "takeScreenshot").glob("*.png")) if flow_dir else []
+    m = re.match(r"([0-9]{2})-", shots[0]) if shots else None
+    found = sorted((folder_dir / platform / "previews").glob(f"{m.group(1)}-*.mp4")) if m else []
+    return found[0] if found and found[0].is_file() and not found[0].is_symlink() else None
+
+
 def phone_results(folder_dir, platform):
-    """{maestro flow name: (verdict, end screen)} for one phone platform of one run."""
+    """{maestro flow name: (verdict, end screen, preview)} for one phone platform of one run."""
     data = read_json(folder_dir / f"{platform}.json")
     if not isinstance(data, dict) or not isinstance(data.get("flows"), list):
         return {}
@@ -137,7 +147,7 @@ def phone_results(folder_dir, platform):
         if dirs:
             sub = "takeScreenshot" if verdict == "pass" else "screenshots"
             shot = newest_png((dirs[-1] / sub).glob("*.png")) or newest_png(dirs[-1].glob("*/*.png"))
-        out[row["flow"]] = (verdict, shot)
+        out[row["flow"]] = (verdict, shot, preview_for(folder_dir, platform, dirs[-1] if dirs else None))
     return out
 
 
@@ -146,7 +156,7 @@ def web_result(folder_dir, test, project):
     if not d.is_dir():
         return None
     failed = newest_png(d.glob("test-failed-*.png"))
-    return ("fail", failed) if failed else ("pass", newest_png(d.glob("test-finished-*.png")))
+    return ("fail", failed, None) if failed else ("pass", newest_png(d.glob("test-finished-*.png")), None)
 
 
 def thumbnail(src, dest):
@@ -191,13 +201,22 @@ def build(renders, flows_json, now=None):
                     continue
                 if not got:
                     continue
-                verdict, shot = got
-                thumb = None
+                verdict, shot, clip = got
+                thumb = preview = None
+                stem = Path("media") / r["folder"] / f"{p}-{re.sub(r'[^a-z0-9]+', '-', test.lower()).strip('-')}"
                 if shot:
-                    rel = Path("media") / r["folder"] / f"{p}-{re.sub(r'[^a-z0-9]+', '-', test.lower()).strip('-')}.jpg"
+                    rel = stem.with_suffix(".jpg")
                     if (out / rel).exists() or thumbnail(shot, out / rel):
                         thumb = rel.as_posix()
+                if clip:
+                    rel = stem.with_suffix(".mp4")
+                    if not (out / rel).exists():
+                        (out / rel).parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(clip, out / rel)
+                    preview = rel.as_posix()
                 row = {"verdict": verdict, "thumb": thumb, "run": r["run"], "run_date": date_of(r["folder"])}
+                if preview:
+                    row["preview"] = preview
                 if shared[(p, test)] > 1:
                     row["note"] = "One test covers this flow and others here; the screen is where that test ends."
                 per[f"{p}/{f['id']}"] = row
