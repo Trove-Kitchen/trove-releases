@@ -25,7 +25,8 @@ fi
 python3 -I "$tools/remove_test_imports.py" || true
 cd "$out"
 run_maestro() {
-  maestro test "$src/flows" \
+  # Cap each attempt (macOS has no timeout(1)); a hung driver otherwise eats the whole job.
+  perl -e 'alarm shift; exec @ARGV' 1800 maestro test "$src/flows" \
     --format junit --output "$out/report.xml" --test-output-dir "$out/maestro" \
     -e APP_ID="$app_id" \
     -e TROVE_TEST_EMAIL="$TROVE_TEST_EMAIL" -e TROVE_TEST_PASSWORD="$TROVE_TEST_PASSWORD" \
@@ -41,6 +42,8 @@ if [ ! -s "$out/report.xml" ]; then
   status=$?
 fi
 echo "$platform: maestro exited $status"
+# Flow names only (each flow gets a folder when it starts), so a hang shows where it stopped.
+for d in "$out"/maestro/*/*/; do [ -d "$d" ] && echo "$platform: started  $(basename "$d")"; done
 python3 -I "$tools/check_account_plan.py" "$platform" || true
 # The recordings that never film the password being typed; only these become clear previews at publish.
 python3 -I "$tools/previewable.py" "$src/flows" > "$out/previewable.txt" || true
