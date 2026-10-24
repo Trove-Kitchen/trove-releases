@@ -3,7 +3,8 @@ name: Trove iOS renders
 # Builds Trove for the simulator at a trove-app ref and screenshots it on an
 # iPhone simulator in light and dark mode, with the debug launch settings the app
 # supports:
-#   - the four tabs (MUNCH_SKIP_ONBOARDING, MUNCH_SEED_DEMO, MUNCH_START_TAB)
+#   - the four tabs with the shared sample account (MUNCH_SKIP_ONBOARDING,
+#     MUNCH_SCREENSHOT_SEED, MUNCH_START_TAB)
 #   - the component gallery's three pages (MUNCH_COMPONENT_GALLERY=1|2|3)
 #
 # trove-app is private and this repository is public, so the screenshots never
@@ -110,7 +111,7 @@ jobs:
           for appearance in light dark; do
             xcrun simctl ui "$udid" appearance "$appearance"
             for tab in recipes mealPlan grocery profile; do
-              shoot "$tab-$appearance" SIMCTL_CHILD_MUNCH_SEED_DEMO=1 SIMCTL_CHILD_MUNCH_START_TAB="$tab"
+              shoot "$tab-$appearance" SIMCTL_CHILD_MUNCH_SCREENSHOT_SEED=1 SIMCTL_CHILD_MUNCH_START_TAB="$tab"
             done
             for page in 1 2 3; do
               shoot "components-$page-$appearance" SIMCTL_CHILD_MUNCH_COMPONENT_GALLERY="$page"
