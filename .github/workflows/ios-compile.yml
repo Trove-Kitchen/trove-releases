@@ -106,6 +106,44 @@ jobs:
           python3 -I tools/report.py post "iOS compile" "$RUNNER_TEMP/private/errors.md" "$PR" "$SHA"
           [ "${{ steps.build.outputs.ok }}" = "true" ]
 
+      # Without a pull request there's nowhere private to post the errors, and
+      # they never go in this public log. Write them to the private
+      # trove-renders repo instead, next to that commit's renders.
+      - name: Mint a write token for trove-renders
+        id: renders-token
+        if: always() && steps.build.outputs.ok == 'false' && inputs.pr_number == ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_RENDERS_APP_ID }}
+          private-key: ${{ secrets.TROVE_RENDERS_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-renders
+
+      - name: Commit the errors to trove-renders, never to this log
+        if: always() && steps.renders-token.outcome == 'success'
+        env:
+          TOKEN: ${{ steps.renders-token.outputs.token }}
+          SHA: ${{ steps.source.outputs.sha }}
+          REF: ${{ inputs.ref }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          dest="$RUNNER_TEMP/trove-renders"
+          git -c http.extraheader="$auth" clone -q --depth 1 https://github.com/Trove-Kitchen/trove-renders.git "$dest"
+          short="${SHA:0:12}"
+          mkdir -p "$dest/$short"
+          { echo "# iOS compile errors for $REF at $short"; echo; echo "Run $GITHUB_RUN_ID."; echo; cat "$RUNNER_TEMP/private/errors.md"; } > "$dest/$short/compile-errors.md"
+          cd "$dest"
+          git config user.name "trove-kitchen-renders[bot]"
+          git config user.email "trove-kitchen-renders[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "iOS compile errors for $REF at $short"
+          for attempt in 1 2 3; do
+            if git -c http.extraheader="$auth" push -q origin HEAD; then echo "errors written to trove-renders $short/compile-errors.md"; exit 0; fi
+            git -c http.extraheader="$auth" pull -q --rebase origin HEAD
+          done
+          exit 1
+
       - name: Remove private source, logs and products
         if: always()
-        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private" "$RUNNER_TEMP/derived"
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private" "$RUNNER_TEMP/derived" "$RUNNER_TEMP/trove-renders"
