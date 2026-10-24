@@ -8,8 +8,10 @@ name: Trove iOS renders
 #
 # trove-app is private and this repository is public, so the screenshots never
 # land here: they're committed to the private Trove-Kitchen/trove-renders repo,
-# under ios/<trove-app commit>/, with a trove-kitchen-renders token. This log
-# shows counts only.
+# in its layout (README there): one folder per trove-app commit, first 12 hex
+# digits, holding ios/*.png and a README, newest 10 kept and listed newest first
+# in runs.json. Written with a trove-kitchen-renders token. This log shows
+# counts only.
 
 run-name: 'Trove iOS renders of ${{ inputs.ref }}'
 
@@ -129,16 +131,35 @@ jobs:
           echo "::add-mask::$auth"
           dest="$RUNNER_TEMP/trove-renders"
           git -c http.extraheader="$auth" clone -q --depth 1 https://github.com/Trove-Kitchen/trove-renders.git "$dest"
-          mkdir -p "$dest/ios/$SHA"
-          cp "$RUNNER_TEMP/private/renders/"*.png "$dest/ios/$SHA/"
-          printf '{"ref": "%s", "sha": "%s", "run": "%s"}\n' "$REF" "$SHA" "$GITHUB_RUN_ID" > "$dest/ios/$SHA/run.json"
+          short="${SHA:0:12}"
+          mkdir -p "$dest/$short/ios"
+          cp "$RUNNER_TEMP/private/renders/"*.png "$dest/$short/ios/"
+          python3 -I - "$dest" "$short" "$REF" "$SHA" "$GITHUB_RUN_ID" <<'PY'
+          import json, os, shutil, sys, datetime
+          dest, short, ref, sha, run = sys.argv[1:]
+          shots = sorted(f for f in os.listdir(os.path.join(dest, short, "ios")) if f.endswith(".png"))
+          with open(os.path.join(dest, short, "README.md"), "w") as out:
+              out.write(f"# iOS renders of {ref} at {short}\n\nRun {run}. Simulator screenshots, light and dark:\n\n")
+              out.write("- `recipes`, `mealPlan`, `grocery`, `profile`: the four tabs with demo data\n")
+              out.write("- `components-1..3`: the component gallery (docs/design/components.md)\n\n")
+              for f in shots:
+                  out.write(f"![{f[:-4]}](ios/{f})\n")
+          path = os.path.join(dest, "runs.json")
+          runs = json.load(open(path)) if os.path.exists(path) else []
+          runs = [r for r in runs if r.get("folder") != short]
+          runs.insert(0, {"folder": short, "sha": sha, "ref": ref, "kind": "ios-renders", "run": run,
+                          "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+          for old in runs[10:]:
+              shutil.rmtree(os.path.join(dest, old["folder"]), ignore_errors=True)
+          json.dump(runs[:10], open(path, "w"), indent=2)
+          PY
           cd "$dest"
           git config user.name "trove-kitchen-renders[bot]"
           git config user.email "trove-kitchen-renders[bot]@users.noreply.github.com"
-          git add "ios/$SHA"
-          git commit -q -m "iOS renders of $REF at ${SHA:0:12}"
+          git add -A
+          git commit -q -m "iOS renders of $REF at $short"
           for attempt in 1 2 3; do
-            if git -c http.extraheader="$auth" push -q origin HEAD; then echo "pushed to trove-renders ios/${SHA:0:12}"; exit 0; fi
+            if git -c http.extraheader="$auth" push -q origin HEAD; then echo "pushed to trove-renders ${SHA:0:12}"; exit 0; fi
             git -c http.extraheader="$auth" pull -q --rebase origin HEAD
           done
           exit 1
