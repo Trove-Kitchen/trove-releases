@@ -25,9 +25,14 @@ on:
         default: main
         type: string
       device:
-        description: Simulator device name
+        description: Simulator device name (an iPad works too, e.g. iPad Pro 13-inch (M4))
         required: false
-        default: iPhone 16 Pro
+        default: iPhone 17 Pro
+        type: string
+      runner:
+        description: macOS runner image; macos-26 has Xcode 26 and the iOS 26 simulator (Liquid Glass)
+        required: false
+        default: macos-26
         type: string
 
 concurrency:
@@ -39,7 +44,7 @@ permissions:
 
 jobs:
   render:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-26' }}
     timeout-minutes: 75
     env:
       BUNDLE_ID: ade-studios.Munch-RKCK
@@ -63,6 +68,13 @@ jobs:
           ref: ${{ inputs.ref }}
           token: ${{ steps.source-token.outputs.token }}
           with_commerce: 'true'
+
+      - name: Use the newest Xcode on this runner
+        run: |
+          latest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -n "$latest" ]; then sudo xcode-select -s "$latest"; fi
+          xcodebuild -version | head -1
+          xcrun simctl list runtimes | grep -i ios | tail -2
 
       - name: Build for the simulator without signing
         working-directory: ${{ runner.temp }}/trove-source
