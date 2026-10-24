@@ -16,7 +16,7 @@ name: Trove Android
 # trove-app is private and this repository is public: build logs stay on the
 # runner, and no bundle or APK is uploaded as an artifact.
 
-run-name: 'Trove Android ${{ inputs.dry_run && ''dry run'' || ''internal release'' }} of ${{ inputs.ref }} (${{ inputs.version_code }})'
+run-name: 'Trove Android ${{ inputs.dry_run && ''dry run'' || ''internal release'' }}${{ (!inputs.ref || inputs.ref == ''main'') && '' of main'' || '''' }} (${{ inputs.version_code }})'
 
 on:
   workflow_dispatch:
@@ -53,7 +53,8 @@ on:
         default: false
 
 concurrency:
-  group: trove-android-${{ inputs.ref }}
+  # One Android build at a time, never grouped by branch name: a group's name can show in this public log.
+  group: trove-android
   cancel-in-progress: false
 
 permissions:
@@ -62,9 +63,11 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
@@ -76,29 +79,53 @@ jobs:
           printf '%s' "$VERSION_CODE" | grep -Eq '^[1-9][0-9]{0,9}$' || { echo "version_code must be a positive whole number"; exit 1; }
           printf '%s' "$VERSION_NAME" | grep -Eq '^[0-9A-Za-z.+-]{1,50}$' || { echo "version_name may hold letters, digits and . + - only"; exit 1; }
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
         with:
           gradle-version: '8.11.1'
           cache-disabled: true
 
       - name: Mint a read-only token for the source
         id: source-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.TROVE_CI_APP_ID }}
           private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
           owner: Trove-Kitchen
           repositories: trove-app
 
+      # trove-app branch names are private and a step's inputs are echoed in this
+      # public log, so the ref is read from the event and only its commit is used.
+      - name: Resolve the ref to a commit, printing no branch name
+        id: commit
+        env:
+          TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          ref="$(jq -r '.inputs.ref // ""' "$GITHUB_EVENT_PATH")"
+          [ -n "$ref" ] || ref=main
+          if printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+            sha="$ref"
+          else
+            printf '%s' "$ref" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or full commit"; exit 1; }
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+            echo "::add-mask::$auth"
+            # A branch first, then a tag's commit.
+            sha="$(git -c http.extraheader="$auth" ls-remote https://github.com/Trove-Kitchen/trove-app.git \
+              "refs/heads/$ref" "refs/tags/$ref" | awk -v r="$ref" '
+                $2 == "refs/heads/" r { h = $1 } $2 == "refs/tags/" r "^{}" { p = $1 } $2 == "refs/tags/" r { t = $1 }
+                END { print h ? h : (p ? p : t) }')"
+          fi
+          printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || { echo "ref is not a trove-app branch, tag or full commit"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
       - id: source
         uses: ./.github/actions/fetch-source
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ steps.commit.outputs.sha }}
           token: ${{ steps.source-token.outputs.token }}
 
       - name: Build an unsigned release bundle and APK
@@ -149,7 +176,7 @@ jobs:
     environment: trove-android
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
@@ -174,13 +201,13 @@ jobs:
             echo "play=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         if: steps.keys.outputs.sign == 'true'
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
         if: steps.keys.outputs.sign == 'true'
         with:
           gradle-version: '8.11.1'
@@ -189,18 +216,19 @@ jobs:
       - name: Mint a read-only token for the source
         if: steps.keys.outputs.sign == 'true'
         id: source-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.TROVE_CI_APP_ID }}
           private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
           owner: Trove-Kitchen
           repositories: trove-app
 
+      # The commit the check job built, so both jobs build the same source.
       - id: source
         if: steps.keys.outputs.sign == 'true'
         uses: ./.github/actions/fetch-source
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.check.outputs.sha }}
           token: ${{ steps.source-token.outputs.token }}
 
       - name: Write the build config and the upload key
