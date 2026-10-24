@@ -1,0 +1,329 @@
+name: Trove device tests
+
+# trove-app's Maestro flows (flows/) on an Android emulator and an iPhone
+# simulator, against trove-staging, signed in as the staging test account:
+# sign in, import a recipe from a link, save it to a collection, view it,
+# add it to the meal plan. Each flow records itself.
+#
+# Environment trove-device-tests (no reviewer): TROVE_TEST_EMAIL,
+# TROVE_TEST_PASSWORD, SUPABASE_URL, SUPABASE_ANON_KEY and RESOLVER_BASE_URL,
+# all staging (tools/require_staging.sh refuses anything else), plus
+# TROVE_RENDERS_AGE_KEY for the publish job.
+#
+# This repository is public and trove-app is private. The test jobs print
+# only flow names and verdicts; everything else leaves the runner encrypted
+# to TROVE_RENDERS_AGE_RECIPIENT. The publish job runs no trove-app code:
+# it decrypts, commits reports and screenshots to the private
+# Trove-Kitchen/trove-renders (device-tests/), and attaches the encrypted
+# archives, which hold the recordings, to a trove-renders release.
+
+run-name: 'Trove device tests of ${{ inputs.ref || ''main'' }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: trove-app branch, tag or commit
+        required: true
+        default: main
+        type: string
+      platforms:
+        description: Which devices
+        required: true
+        type: choice
+        options: [both, android, ios]
+        default: both
+
+concurrency:
+  group: trove-device-tests
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    # One commit for both devices, so a push to the ref mid-run can't split the report.
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+      - id: sha
+        env:
+          TOKEN: ${{ steps.source-token.outputs.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or commit"; exit 1; }
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then sha="$REF"; else
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+            echo "::add-mask::$auth"
+            sha="$(git -c http.extraheader="$auth" ls-remote https://github.com/Trove-Kitchen/trove-app.git "$REF" "refs/tags/$REF^{}" | awk 'NR==1{print $1}')"
+          fi
+          printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || { echo "No commit for that ref"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "trove-app $sha"
+
+  android:
+    needs: resolve
+    if: inputs.platforms != 'ios'
+    runs-on: ubuntu-24.04
+    environment: trove-device-tests
+    timeout-minutes: 90
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      sealed: ${{ steps.seal.outputs.sealed }}
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      RESOLVER_BASE_URL: ${{ secrets.RESOLVER_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require staging
+        env:
+          TROVE_TEST_EMAIL: ${{ secrets.TROVE_TEST_EMAIL }}
+          TROVE_TEST_PASSWORD: ${{ secrets.TROVE_TEST_PASSWORD }}
+        run: tools/require_staging.sh
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+
+      - name: Install age and Maestro
+        run: |
+          sudo apt-get install -y -qq age > /dev/null
+          curl -fsSL -o "$RUNNER_TEMP/maestro.zip" https://github.com/mobile-dev-inc/maestro/releases/download/cli-2.10.0/maestro.zip
+          unzip -q "$RUNNER_TEMP/maestro.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Build the app against staging
+        working-directory: ${{ runner.temp }}/trove-source/android
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          python3 -I - <<'PY'
+          import os
+          esc = lambda v: v.replace("\\", "\\\\")
+          with open("local.properties", "w") as f:
+              f.write(f"sdk.dir={esc(os.environ['ANDROID_HOME'])}\n")
+              for k in ("SUPABASE_URL", "SUPABASE_ANON_KEY", "RESOLVER_BASE_URL"):
+                  f.write(f"{k}={esc(os.environ[k])}\n")
+          PY
+          gradle --no-daemon --console=plain :app:assembleDebug > "$RUNNER_TEMP/private/gradle.log" 2>&1 \
+            || { echo "The debug build failed; run Trove Android unit tests for the errors."; exit 1; }
+          echo "build passed"
+
+      - name: Let the emulator use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run the flows on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          TROVE_TEST_EMAIL: ${{ secrets.TROVE_TEST_EMAIL }}
+          TROVE_TEST_PASSWORD: ${{ secrets.TROVE_TEST_PASSWORD }}
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: tools/run_flows.sh android "$RUNNER_TEMP/trove-source/android/app/build/outputs/apk/debug/app-debug.apk"
+
+      - name: Seal the report
+        id: seal
+        env:
+          TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
+        run: python3 -I tools/renders.py seal android "$RUNNER_TEMP/flows-out/android"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sealed-android
+          path: ${{ runner.temp }}/sealed/android.*
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Fail if a flow failed
+        run: python3 -I tools/renders.py verdict android
+
+      - name: Remove private source, logs, products and recordings
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private" "$RUNNER_TEMP/flows-out"
+
+  ios:
+    needs: resolve
+    if: inputs.platforms != 'android'
+    runs-on: macos-15
+    environment: trove-device-tests
+    timeout-minutes: 90
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      sealed: ${{ steps.seal.outputs.sealed }}
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      RESOLVER_BASE_URL: ${{ secrets.RESOLVER_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require staging
+        env:
+          TROVE_TEST_EMAIL: ${{ secrets.TROVE_TEST_EMAIL }}
+          TROVE_TEST_PASSWORD: ${{ secrets.TROVE_TEST_PASSWORD }}
+        run: tools/require_staging.sh
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install age and Maestro
+        run: |
+          brew install age > /dev/null
+          curl -fsSL -o "$RUNNER_TEMP/maestro.zip" https://github.com/mobile-dev-inc/maestro/releases/download/cli-2.10.0/maestro.zip
+          unzip -q "$RUNNER_TEMP/maestro.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app,trove-commerce
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ steps.source-token.outputs.token }}
+          with_commerce: 'true'
+
+      - name: Build the app for the simulator against staging
+        working-directory: ${{ runner.temp }}/trove-source
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          python3 -I - <<'PY'
+          import os
+          # xcconfig treats // as a comment, so URLs are split with $(SLASH).
+          s = lambda k: f"{k} = {os.environ[k].replace('//', '$(SLASH)$(SLASH)')}\n"
+          open("Munch/Supabase.xcconfig", "w").write(
+              "SLASH = /\n" + s("SUPABASE_URL") + s("SUPABASE_ANON_KEY") + s("RESOLVER_BASE_URL"))
+          PY
+          xcodebuild -workspace Munch.xcworkspace -scheme Munch -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/derived" \
+            CODE_SIGNING_ALLOWED=NO build > "$RUNNER_TEMP/private/build.log" 2>&1 \
+            || { echo "The simulator build failed; run Trove iOS compile for the errors."; exit 1; }
+          echo "build passed"
+
+      - name: Run the flows on a simulator
+        env:
+          TROVE_TEST_EMAIL: ${{ secrets.TROVE_TEST_EMAIL }}
+          TROVE_TEST_PASSWORD: ${{ secrets.TROVE_TEST_PASSWORD }}
+        run: |
+          app="$(find "$RUNNER_TEMP/derived/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -1)"
+          udid="$(xcrun simctl create trove-flows 'iPhone 16 Pro')"
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b > /dev/null
+          tools/run_flows.sh ios "$app"
+          xcrun simctl delete "$udid"
+
+      - name: Seal the report
+        id: seal
+        env:
+          TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
+        run: python3 -I tools/renders.py seal ios "$RUNNER_TEMP/flows-out/ios"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sealed-ios
+          path: ${{ runner.temp }}/sealed/ios.*
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Fail if a flow failed
+        run: python3 -I tools/renders.py verdict ios
+
+      - name: Remove private source, logs, products and recordings
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private" "$RUNNER_TEMP/flows-out" "$RUNNER_TEMP/derived"
+
+  publish:
+    # Publishes whatever was sealed, even when a device job then failed its verdict.
+    needs: [resolve, android, ios]
+    if: ${{ !cancelled() && (needs.android.outputs.sealed == 'true' || needs.ios.outputs.sealed == 'true') }}
+    runs-on: ubuntu-24.04
+    environment: trove-device-tests
+    timeout-minutes: 20
+    concurrency:
+      group: trove-renders-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Mint the trove-kitchen-renders token
+        id: renders-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_RENDERS_APP_ID }}
+          private-key: ${{ secrets.TROVE_RENDERS_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-renders
+
+      - run: sudo apt-get install -y -qq age > /dev/null
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sealed-*
+          path: ${{ runner.temp }}/sealed
+          merge-multiple: true
+
+      - name: Publish to trove-renders
+        env:
+          TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
+          TROVE_RENDERS_AGE_KEY: ${{ secrets.TROVE_RENDERS_AGE_KEY }}
+          TROVE_RENDERS_TOKEN: ${{ steps.renders-token.outputs.token }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+        run: python3 -I tools/renders.py publish device-tests "$SHA" "$RUNNER_TEMP/sealed"
+
+      - name: Remove decrypted files
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/sealed" "$RUNNER_TEMP/renders-private" "$RUNNER_TEMP/renders-tree" "$RUNNER_TEMP/renders-git"

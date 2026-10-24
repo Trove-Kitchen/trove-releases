@@ -113,6 +113,9 @@ jobs:
             -Ptrove.versionCode="$VERSION_CODE" -Ptrove.versionName="$VERSION_NAME" \
             > "$RUNNER_TEMP/private/gradle.log" 2>&1 || {
               echo "The release build failed ($(grep -c '^e: ' "$RUNNER_TEMP/private/gradle.log") Kotlin errors)."
+              # Gradle's one-line reason (a task or config message, not source), with runner paths removed.
+              grep -A4 'What went wrong' "$RUNNER_TEMP/private/gradle.log" | grep -E '^\s*>' | head -3 \
+                | sed -E "s#$RUNNER_TEMP/trove-source/##g" | cut -c1-200 || true
               echo "Run Trove Android unit tests with a pr_number to get the errors on the pull request."
               exit 1; }
           echo "release build passed"
