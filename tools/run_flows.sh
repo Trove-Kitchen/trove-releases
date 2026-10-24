@@ -16,6 +16,8 @@ else
   app_id=ade-studios.Munch-RKCK
   xcrun simctl install booted "$app" > "$RUNNER_TEMP/private/install.log" 2>&1 || { echo "ios: install failed"; exit 0; }
 fi
+# Same library every run: drop the test account's earlier imports of the test link.
+python3 -I "$(dirname "$0")/remove_test_imports.py" || true
 cd "$out"
 maestro test "$src/flows" \
   --format junit --output "$out/report.xml" --test-output-dir "$out/maestro" \
