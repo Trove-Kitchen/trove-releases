@@ -149,7 +149,7 @@ jobs:
           # Counts here; test names and messages only into the private details.
           python3 -I "$GITHUB_WORKSPACE/tools/report.py" junit "$private/results" "$private/tests.md"
           cat "$private/tests.md" >> "$private/errors.md"
-          if [ $image -eq 0 ] && [ $tests -ne 0 ] && [ ! -s "$private/tests.md" ]; then
+          if [ $image -eq 0 ] && [ "${layer:-1}" -eq 0 ] && [ $tests -ne 0 ] && [ ! -s "$private/tests.md" ]; then
             echo "- The tests failed without a failing test (collection or the container)." >> "$private/errors.md"
           fi
           if [ $image -eq 0 ] && [ $probe -eq 0 ] && [ $tests -eq 0 ]; then
