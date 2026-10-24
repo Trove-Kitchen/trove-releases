@@ -19,11 +19,25 @@ Being public costs nothing here because there is no source and no readable secre
 | **Trove Android unit tests** (`android-unit.yml`) | Linux | none | `:app:testDebugUnitTest` passes |
 | **Trove web tests** (`web-tests.yml`) | Linux | none | The web site's design tokens are current and pass contrast, its unit tests pass, it builds on fixture data, and its Playwright e2e tests pass in Chromium |
 | **Trove video resolver container** (`resolver-container.yml`) | Linux | none | The resolver's production image builds, starts offline, and passes its mocked API and extraction tests with no network |
+| **Trove checks on a schedule** (`check-schedule.yml`) | Linux | none | Every 15 minutes, dispatches the web tests and the video resolver container for trove-app heads that changed their paths and haven't been checked |
 | **Trove device tests** (`device-tests.yml`) | Linux + macOS | `trove-device-tests` | trove-app's Maestro flows pass on an Android emulator and an iPhone simulator against trove-staging; recordings go to trove-renders |
 | **Trove web flows** (`web-flows.yml`) | Linux | `trove-device-tests` | trove-app's Playwright flows pass in Chromium (phone and desktop) against trove-staging; videos go to trove-renders |
 | **Trove Android** (`android-play.yml`) | Linux | `trove-android` for the release job | `bundleRelease` builds and meets Play's 16 KB page rule; signs and sends to the Play **internal** track when `dry_run` is off |
 
 The check workflows (iOS compile, Android unit tests, web tests, video resolver container) take a trove-app `ref` and, optionally, a trove-app `pr_number`. They are built for agents that have no Mac: dispatch one at a branch and read the result. A pull request that changes a check workflow, `fetch-source` or `tools/report.py` runs that check once against trove-app `main`.
+
+### Checks on a schedule
+
+trove-app runs no Actions of its own. `check-schedule.yml` runs every 15 minutes (and by hand) and dispatches `web-tests.yml` and `resolver-container.yml` for trove-app heads, with `tools/check_schedule.py`:
+
+- **Which heads.** main, and every branch with a commit in the last 3 days. A branch counts when `main...head` changes the check's paths. For main, it's the range since the newest commit that check already ran on.
+- **Which paths.** Web tests: `web/`, `scripts/design-tokens/`, `docs/design/tokens.json`. Resolver: `services/video-resolver/`.
+- **How work is found.** `trove-kitchen-ci` can read trove-app's contents but not its pull requests, so heads come from branches and comparisons.
+- **When a head is skipped.** A commit runs once per check: a run named with that SHA in the last 5 days skips it. At most 3 checks are dispatched per run.
+- **Pull request numbers.** When `TROVE_PR_COMMENT_TOKEN` can read trove-app's pull requests, each pick's open pull request is found and passed as `pr_number`, so the details are posted there.
+- **Dry runs.** A pull request that changes the schedule runs its unit tests (`tools/test_check_schedule.py`) and a dry run that dispatches nothing.
+
+The two scheduled checks take an optional `sha` as well as `ref`. Their run names and logs show only the SHA and the pull request number, never a trove-app branch name; a `ref` is read from the event and resolved to its commit before anything prints it.
 
 ### Nothing from trove-app is printed here
 

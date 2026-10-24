@@ -11,15 +11,19 @@ name: Trove video resolver container
 # package versions stay on the runner, and failing test names and messages go
 # to the trove-app pull request (tools/report.py).
 
-run-name: 'Trove video resolver container of ${{ inputs.ref || ''main'' }}${{ inputs.pr_number && format('' (trove-app #{0})'', inputs.pr_number) || '''' }}'
+run-name: 'Trove video resolver container${{ inputs.sha && format('' at {0}'', inputs.sha) || '''' }}${{ inputs.pr_number && format('' (trove-app #{0})'', inputs.pr_number) || '''' }}'
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: trove-app branch, tag or commit
+        description: trove-app branch, tag or full commit (never shown in the run name or log)
         required: true
         default: main
+        type: string
+      sha:
+        description: trove-app commit to check instead of ref (full SHA; shown in the run name)
+        required: false
         type: string
       pr_number:
         description: trove-app pull request to post the result on (optional)
@@ -34,7 +38,8 @@ on:
       - tools/report.py
 
 concurrency:
-  group: trove-resolver-container-${{ inputs.ref || github.ref }}
+  # By commit or pull request, never by branch name: a group's name can show in this public log.
+  group: trove-resolver-container-${{ inputs.sha || (inputs.pr_number && format('pr-{0}', inputs.pr_number)) || (github.event_name == 'pull_request' && github.ref) || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -58,10 +63,34 @@ jobs:
           owner: Trove-Kitchen
           repositories: trove-app
 
+      # trove-app branch names are private. The ref is read from the event, not passed
+      # through an expression (a step's inputs are echoed in this log), and resolved
+      # to its commit, so only a SHA reaches fetch-source.
+      - name: Resolve the commit to check, printing no branch name
+        id: commit
+        env:
+          TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          sha="$(jq -r '.inputs.sha // ""' "$GITHUB_EVENT_PATH")"
+          ref="$(jq -r '.inputs.ref // "main"' "$GITHUB_EVENT_PATH")"
+          if [ -n "$sha" ]; then
+            printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || { echo "sha must be a full 40-character commit"; exit 1; }
+          elif printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+            sha="$ref"
+          else
+            printf '%s' "$ref" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or full commit"; exit 1; }
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+            echo "::add-mask::$auth"
+            sha="$(git -c http.extraheader="$auth" ls-remote https://github.com/Trove-Kitchen/trove-app.git \
+              "refs/heads/$ref" "refs/tags/$ref" | awk 'NR == 1 { print $1 }')"
+            [ -n "$sha" ] || { echo "ref is not a trove-app branch, tag or full commit"; exit 1; }
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
       - id: source
         uses: ./.github/actions/fetch-source
         with:
-          ref: ${{ inputs.ref || 'main' }}
+          ref: ${{ steps.commit.outputs.sha }}
           token: ${{ steps.source-token.outputs.token }}
 
       - name: Build, probe and test the image without any credential
