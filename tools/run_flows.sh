@@ -21,11 +21,22 @@ fi
 # Same library every run: drop the test account's earlier imports of the test link.
 python3 -I "$(dirname "$0")/remove_test_imports.py" || true
 cd "$out"
-maestro test "$src/flows" \
-  --format junit --output "$out/report.xml" --test-output-dir "$out/maestro" \
-  -e APP_ID="$app_id" \
-  -e TROVE_TEST_EMAIL="$TROVE_TEST_EMAIL" -e TROVE_TEST_PASSWORD="$TROVE_TEST_PASSWORD" \
-  > "$RUNNER_TEMP/private/maestro-$platform.log" 2>&1
-echo "$platform: maestro exited $?"
+run_maestro() {
+  maestro test "$src/flows" \
+    --format junit --output "$out/report.xml" --test-output-dir "$out/maestro" \
+    -e APP_ID="$app_id" \
+    -e TROVE_TEST_EMAIL="$TROVE_TEST_EMAIL" -e TROVE_TEST_PASSWORD="$TROVE_TEST_PASSWORD" \
+    >> "$RUNNER_TEMP/private/maestro-$platform.log" 2>&1
+}
+run_maestro
+status=$?
+# Maestro's iOS driver sometimes fails to start and no flow runs (no report).
+# That is the runner, not the app: try once more.
+if [ ! -s "$out/report.xml" ]; then
+  echo "$platform: no flow ran (maestro exited $status); retrying once"
+  run_maestro
+  status=$?
+fi
+echo "$platform: maestro exited $status"
 # Screenshots and recordings from the flows are written to the working directory.
 exit 0
