@@ -246,9 +246,13 @@ jobs:
           open("Munch/Supabase.xcconfig", "w").write(
               "SLASH = /\n" + s("SUPABASE_URL") + s("SUPABASE_ANON_KEY") + s("RESOLVER_BASE_URL"))
           PY
+          # Signed to run locally (ad hoc, no certificate) so the app's entitlements
+          # (app group, Keychain) apply. Built unsigned, the app came back signed out
+          # whenever a flow relaunched it.
           xcodebuild -workspace Munch.xcworkspace -scheme Munch -configuration Debug \
             -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/derived" \
-            CODE_SIGNING_ALLOWED=NO build > "$RUNNER_TEMP/private/build.log" 2>&1 \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
+            build > "$RUNNER_TEMP/private/build.log" 2>&1 \
             || { echo "The simulator build failed; run Trove iOS compile for the errors."; exit 1; }
           echo "build passed"
 
