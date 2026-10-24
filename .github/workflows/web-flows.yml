@@ -4,7 +4,9 @@ name: Trove web flows
 # Chromium, phone and desktop sizes, against trove-staging, with video:
 #   logged out: browse and open a public recipe;
 #   signed in as the staging test account: import a recipe from a link,
-#   save it to a collection, view it, add it to the meal plan.
+#   save it to a collection, view it, add it to the meal plan and tick an
+#   item Stocked on the grocery list (each run first removes the account's
+#   earlier imports of that link).
 #
 # Same environment and handling as device-tests.yml: verdicts only in this
 # log, everything else age-encrypted, published to trove-renders (web-flows/)
