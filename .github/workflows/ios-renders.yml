@@ -124,7 +124,13 @@ jobs:
             fi
             xcrun simctl io "$udid" screenshot "$out/$name.png" >/dev/null 2>&1
             # The goal screens' accessibility trees, for the library check below.
-            case "$name" in components-*) ;; *) axe describe-ui --udid "$udid" > "$out/$name.ax.json" 2>/dev/null || true ;; esac
+            case "$name" in components-*) ;; *)
+              for attempt in 1 2 3; do
+                axe describe-ui --udid "$udid" > "$out/$name.ax.json" 2>/dev/null || true
+                python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$out/$name.ax.json" 2>/dev/null && break
+                sleep 2
+              done ;;
+            esac
           }
           for appearance in light dark; do
             xcrun simctl ui "$udid" appearance "$appearance"
