@@ -1,0 +1,149 @@
+name: Trove web flows
+
+# trove-app's Playwright flows (web/flows, playwright.flows.config.ts) in
+# Chromium, phone and desktop sizes, against trove-staging, with video:
+#   logged out: browse and open a public recipe;
+#   signed in as the staging test account: import a recipe from a link,
+#   save it to a collection, view it, add it to the meal plan.
+#
+# Same environment and handling as device-tests.yml: verdicts only in this
+# log, everything else age-encrypted, published to trove-renders (web-flows/)
+# by a job that runs no trove-app code.
+
+run-name: 'Trove web flows of ${{ inputs.ref || ''main'' }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: trove-app branch, tag or commit
+        required: true
+        default: main
+        type: string
+
+concurrency:
+  group: trove-web-flows
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    environment: trove-device-tests
+    timeout-minutes: 45
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      RESOLVER_BASE_URL: ${{ secrets.RESOLVER_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require staging
+        env:
+          TROVE_TEST_EMAIL: ${{ secrets.TROVE_TEST_EMAIL }}
+          TROVE_TEST_PASSWORD: ${{ secrets.TROVE_TEST_PASSWORD }}
+        run: tools/require_staging.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: sudo apt-get install -y -qq age > /dev/null
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ inputs.ref }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Build the web app
+        working-directory: ${{ runner.temp }}/trove-source/web
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          [ -f playwright.flows.config.ts ] || { echo "This trove-app ref has no web flows (web/playwright.flows.config.ts)."; exit 1; }
+          { npm ci && npx playwright install --with-deps chromium && npm run build; } > "$RUNNER_TEMP/private/build.log" 2>&1 \
+            || { echo "The web build failed."; exit 1; }
+          echo "build passed"
+
+      - name: Run the flows
+        working-directory: ${{ runner.temp }}/trove-source/web
+        env:
+          TROVE_TEST_EMAIL: ${{ secrets.TROVE_TEST_EMAIL }}
+          TROVE_TEST_PASSWORD: ${{ secrets.TROVE_TEST_PASSWORD }}
+          FLOWS_OUT: ${{ runner.temp }}/flows-out/web
+        run: |
+          npx playwright test -c playwright.flows.config.ts > "$RUNNER_TEMP/private/playwright.log" 2>&1 \
+            && echo "playwright passed" || echo "playwright reported failures"
+
+      - name: Seal the report
+        env:
+          TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
+        run: python3 -I tools/renders.py seal web "$RUNNER_TEMP/flows-out/web"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sealed-web
+          path: ${{ runner.temp }}/sealed/web.*
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Fail if a flow failed
+        run: python3 -I tools/renders.py verdict web
+
+      - name: Remove private source, logs and recordings
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private" "$RUNNER_TEMP/flows-out"
+
+  publish:
+    needs: web
+    if: ${{ !cancelled() && needs.web.outputs.sha }}
+    runs-on: ubuntu-24.04
+    environment: trove-device-tests
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Mint the trove-kitchen-renders token
+        id: renders-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_RENDERS_APP_ID }}
+          private-key: ${{ secrets.TROVE_RENDERS_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-renders
+
+      - run: sudo apt-get install -y -qq age > /dev/null
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sealed-web
+          path: ${{ runner.temp }}/sealed
+
+      - name: Publish to trove-renders
+        env:
+          TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
+          TROVE_RENDERS_AGE_KEY: ${{ secrets.TROVE_RENDERS_AGE_KEY }}
+          TROVE_RENDERS_TOKEN: ${{ steps.renders-token.outputs.token }}
+          SHA: ${{ needs.web.outputs.sha }}
+        run: python3 -I tools/renders.py publish web-flows "$SHA" "$RUNNER_TEMP/sealed"
+
+      - name: Remove decrypted files
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/sealed" "$RUNNER_TEMP/renders-private" "$RUNNER_TEMP/renders-tree" "$RUNNER_TEMP/renders-git"

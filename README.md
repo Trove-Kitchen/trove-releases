@@ -17,6 +17,8 @@ Being public costs nothing here because there is no source and no readable secre
 | **Trove iOS** (`ios-testflight.yml`) | macOS | `trove-ios` | Archive, sign, validate with Apple; upload to TestFlight when `dry_run` is off |
 | **Trove iOS compile** (`ios-compile.yml`) | macOS | none | The app compiles for the simulator and the MunchMatching tests pass, with no signing |
 | **Trove Android unit tests** (`android-unit.yml`) | Linux | none | `:app:testDebugUnitTest` passes |
+| **Trove device tests** (`device-tests.yml`) | Linux + macOS | `trove-device-tests` | trove-app's Maestro flows pass on an Android emulator and an iPhone simulator against trove-staging; recordings go to trove-renders |
+| **Trove web flows** (`web-flows.yml`) | Linux | `trove-device-tests` | trove-app's Playwright flows pass in Chromium (phone and desktop) against trove-staging; videos go to trove-renders |
 | **Trove Android** (`android-play.yml`) | Linux | `trove-android` for the release job | `bundleRelease` builds and meets Play's 16 KB page rule; signs and sends to the Play **internal** track when `dry_run` is off |
 
 The two check workflows take a trove-app `ref` and, optionally, a trove-app `pr_number`. They are built for agents that have no Mac: dispatch one at a branch and read the result. A pull request that changes a check workflow, `fetch-source` or `tools/report.py` runs that check once against trove-app `main`.
@@ -79,6 +81,15 @@ Repository secrets (every workflow):
 
 - `TROVE_CI_APP_ID`, `TROVE_CI_APP_PRIVATE_KEY` — the `trove-kitchen-ci` app
 - `TROVE_PR_COMMENT_TOKEN` — optional. With it, the check workflows post their details on the trove-app pull request; without it, results stay pass/fail in the log.
+
+`trove-device-tests` environment (no reviewer; staging only):
+
+- `TROVE_TEST_EMAIL`, `TROVE_TEST_PASSWORD` — the staging test account
+- `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `RESOLVER_BASE_URL` — **staging** values. `tools/require_staging.sh` refuses to run if they point anywhere else.
+- `TROVE_RENDERS_AGE_KEY` — the age private key, used only by the publish jobs to decrypt reports before committing them to trove-renders. Without it, only verdicts are committed.
+- `TROVE_RENDERS_APP_ID`, `TROVE_RENDERS_APP_PRIVATE_KEY` — the `trove-kitchen-renders` app (here or as repository secrets)
+
+Repository variable `TROVE_RENDERS_AGE_RECIPIENT` — the age public key. Test jobs encrypt everything except flow names and verdicts to it before it leaves the runner. Recordings are never committed: they're encrypted assets of a trove-renders release (`device-tests-<date>-<sha>`, `web-flows-<date>-<sha>`), and the newest 10 of each are kept.
 
 `trove-android` environment (Samuel's review):
 
