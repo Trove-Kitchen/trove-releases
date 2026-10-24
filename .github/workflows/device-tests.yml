@@ -61,7 +61,7 @@ jobs:
           TOKEN: ${{ steps.source-token.outputs.token }}
           REF: ${{ inputs.ref }}
         run: |
-          printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or commit"; exit 1; }
+          [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "ref must be a branch, tag or commit"; exit 1; }
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then sha="$REF"; else
             auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
             echo "::add-mask::$auth"

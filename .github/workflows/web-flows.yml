@@ -92,6 +92,9 @@ jobs:
         run: |
           npx playwright test -c playwright.flows.config.ts > "$RUNNER_TEMP/private/playwright.log" 2>&1 \
             && echo "playwright passed" || echo "playwright reported failures"
+          # The specs whose videos never film the password; only these become clear previews at publish.
+          mkdir -p "$FLOWS_OUT"
+          python3 -I "$GITHUB_WORKSPACE/tools/previewable_web.py" flows > "$FLOWS_OUT/previewable.txt" || true
 
       - name: Seal the report
         id: seal

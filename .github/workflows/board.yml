@@ -19,9 +19,11 @@ on:
         default: main
         type: string
 
+# Its own group: sharing the publish jobs' group would let a queued board run cancel a pending publish.
+# Its fetch/rebuild/push loop already copes with a publish landing first, and only the newest board matters.
 concurrency:
-  group: trove-renders-publish
-  cancel-in-progress: false
+  group: trove-board
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -53,7 +55,8 @@ jobs:
           owner: Trove-Kitchen
           repositories: trove-renders
 
-      - run: python3 -m pip install -q --user pillow
+      # The system package, so tools/board.py sees it under python3 -I (which ignores user site-packages).
+      - run: sudo apt-get install -y -qq python3-pil > /dev/null
 
       - name: Build and commit the board
         env:
@@ -61,7 +64,7 @@ jobs:
           RENDERS_TOKEN: ${{ steps.renders-token.outputs.token }}
           REF: ${{ inputs.ref || 'main' }}
         run: |
-          printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or commit"; exit 1; }
+          [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "ref must be a branch, tag or commit"; exit 1; }
           flows="$RUNNER_TEMP/flows.json"
           curl -fsS -H "Authorization: Bearer $SOURCE_TOKEN" -H "Accept: application/vnd.github.raw" \
             "https://api.github.com/repos/Trove-Kitchen/trove-app/contents/docs/evidence/flows.json?ref=$REF" -o "$flows" \

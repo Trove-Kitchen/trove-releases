@@ -164,13 +164,15 @@ def previews(src: Path, dest: Path) -> list[Path]:
 
 
 def web_previews(src: Path, dest: Path) -> list[Path]:
-    """Small MP4s of Playwright's videos, one per test and project (artifacts/<test>-<project>/video.webm).
-    The web flows type the password only into a password field, which the browser masks, in one fill."""
-    if not shutil.which("ffmpeg"):
+    """Small MP4s of Playwright's videos, one per test and project (artifacts/<test>-<project>/video.webm), for the
+    specs previewable.txt lists (tools/previewable_web.py: specs that never touch the password)."""
+    allowed = src / "previewable.txt"
+    if not allowed.is_file() or not shutil.which("ffmpeg"):
         return []
+    specs = [s for s in allowed.read_text().split() if PREVIEW_NAME.fullmatch(s)]
     made = []
     for video in sorted((src / "artifacts").glob("*/*.webm")):
-        if not PREVIEW_NAME.fullmatch(video.parent.name):
+        if not PREVIEW_NAME.fullmatch(video.parent.name) or not any(video.parent.name.startswith(s + "-") for s in specs):
             continue
         out = dest / "previews" / f"{video.parent.name}.mp4"
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -319,7 +321,11 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
         base.mkdir(exist_ok=True)
         index = base / "runs.json"
         runs = json.loads(index.read_text()) if index.is_file() else []
-        merged = carry_over(base / folder, tree, entry, runs, summaries, files, kind, sha, run_url, tag)
+        # carry_over adds the other platforms' files; start each attempt from this run's files only.
+        attempt_tree = temp() / "renders-tree-attempt" / folder
+        shutil.rmtree(attempt_tree.parent, ignore_errors=True)
+        shutil.copytree(tree, attempt_tree)
+        merged = carry_over(base / folder, attempt_tree, entry, runs, summaries, files, kind, sha, run_url, tag)
         runs = [r for r in runs if isinstance(r, dict) and r.get("folder") != folder]
         runs.insert(0, merged)
         dropped = [r["folder"] for r in runs[KEEP:] if isinstance(r.get("folder"), str)]
@@ -327,7 +333,7 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
             shutil.rmtree(base / old, ignore_errors=True)
         runs = runs[:KEEP]
         shutil.rmtree(base / folder, ignore_errors=True)
-        shutil.copytree(tree, base / folder)
+        shutil.copytree(attempt_tree, base / folder)
         index.write_text(json.dumps(runs, indent=2) + "\n")
         git(["add", "-A"], work, auth)
         git(["-c", "user.name=trove-kitchen-renders", "-c", "user.email=renders@trove-releases.invalid",

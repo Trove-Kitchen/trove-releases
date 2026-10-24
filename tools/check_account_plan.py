@@ -12,7 +12,7 @@ import sys
 import urllib.parse
 import urllib.request
 
-STAGING_REF = 'kcmldknrfijrhacnqwjx'
+STAGING_HOST = 'kcmldknrfijrhacnqwjx.supabase.co'
 DEFAULT_LINK = 'https://www.bbcgoodfood.com/recipes/easy-pancakes'
 
 
@@ -27,19 +27,20 @@ def call(method, url, key, token=None, body=None):
 def main(platform):
     base = os.environ.get('SUPABASE_URL', '').rstrip('/')
     key = os.environ.get('SUPABASE_ANON_KEY', '')
-    if STAGING_REF not in base or not key:
+    if urllib.parse.urlsplit(base)[:2] != ('https', STAGING_HOST) or not key:
         return
     link = os.environ.get('RECIPE_URL') or DEFAULT_LINK
     session = call('POST', f'{base}/auth/v1/token?grant_type=password', key,
                    body={'email': os.environ['TROVE_TEST_EMAIL'], 'password': os.environ['TROVE_TEST_PASSWORD']})
     token = session['access_token']
+    owner = urllib.parse.quote(session['user']['id'], safe='')
     since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)).isoformat(timespec='seconds')
-    recipes = call('GET', f'{base}/rest/v1/recipes?select=id&source_url=eq.{urllib.parse.quote(link, safe="")}', key, token) or []
+    recipes = call('GET', f'{base}/rest/v1/recipes?select=id&owner=eq.{owner}&source_url=eq.{urllib.parse.quote(link, safe="")}', key, token) or []
     ids = [r['id'] for r in recipes]
     rows = []
     if ids:
         listed = urllib.parse.quote('(' + ','.join(f'"{i}"' for i in ids) + ')', safe='')
-        rows = call('GET', f'{base}/rest/v1/meal_plan_items?select=id&recipe_id=in.{listed}'
+        rows = call('GET', f'{base}/rest/v1/meal_plan_items?select=id&owner=eq.{owner}&recipe_id=in.{listed}'
                            f'&created_at=gte.{urllib.parse.quote(since, safe="")}', key, token) or []
     print(f'{platform}: account has {len(rows)} meal plan row(s) for the test recipe from the last hour')
 

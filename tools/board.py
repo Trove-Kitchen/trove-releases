@@ -65,6 +65,8 @@ def checked_flows(data):
     """trove-app's flows.json as (platforms, flows), each a fixed shape, or BoardError."""
     if not isinstance(data, dict) or not isinstance(data.get("flows"), list) or not data["flows"]:
         raise BoardError("flows.json has no flows")
+    if not isinstance(data.get("platforms", []), list):
+        raise BoardError("flows.json has malformed platforms")
     platforms = []
     for p in data.get("platforms", []):
         if not (isinstance(p, dict) and p.get("id") in PLATFORMS and text(p.get("title"), 40)):
@@ -74,7 +76,9 @@ def checked_flows(data):
     known = {p["id"] for p in platforms}
     flows, ids = [], set()
     for f in data["flows"]:
-        tests = f.get("tests") if isinstance(f, dict) else None
+        if not isinstance(f, dict):
+            raise BoardError("flows.json has a malformed flow")
+        tests = f.get("tests")
         if not (isinstance(f.get("id"), str) and FLOW_ID.fullmatch(f["id"]) and f["id"] not in ids and
                 text(f.get("title"), MAX_LINE) and text(f.get("goal"), MAX_TEXT) and isinstance(tests, dict) and tests and
                 all(p in known and isinstance(t, str) and TEST.fullmatch(t) for p, t in tests.items())):
@@ -112,6 +116,12 @@ def runs(renders):
         if mine:
             out.append({"kind": kind, "folder": folder, "run": str(run), "platforms": mine})
     return list(reversed(out[:HISTORY]))
+
+
+def script_json(data):
+    """JSON that can sit inside <script> whatever the text holds (no </script>, <!--, or line separators)."""
+    return (json.dumps(data).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
 
 
 def date_of(folder):
@@ -167,11 +177,16 @@ def thumbnail(src, dest):
         from PIL import Image
     except ImportError:
         return None
+    Image.MAX_IMAGE_PIXELS = 40_000_000  # a phone screenshot is ~3 million; anything far larger is refused
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with Image.open(src) as im:
-        im = im.convert("RGB")
-        im.thumbnail((WIDTH * 2, WIDTH * 4))
-        im.save(dest, "JPEG", quality=72, optimize=True)
+    try:
+        with Image.open(src) as im:
+            im = im.convert("RGB")
+            im.thumbnail((WIDTH * 2, WIDTH * 4))
+            im.save(dest, "JPEG", quality=72, optimize=True)
+    except Exception:  # a truncated or oversized screenshot: the card shows no end screen, the board still builds
+        dest.unlink(missing_ok=True)
+        return None
     return dest
 
 
@@ -248,10 +263,9 @@ def build(renders, flows_json, now=None):
                      for k, r in zip(order, history)]}
     now = now or datetime.datetime.now(datetime.timezone.utc)
     when = f"{now.day} {MONTHS[now.month - 1]} {now.year}, {now:%H:%M} UTC"
-    page = (TEMPLATE.read_text()
-            .replace("{{DATA}}", json.dumps(data).replace("</", "<\\/"))
-            .replace("{{BANNER}}", "null")
-            .replace("{{RUN_WHEN}}", when))
+    values = {"DATA": script_json(data), "BANNER": "null", "RUN_WHEN": when}
+    # One pass, so text inside the data that looks like a placeholder is left alone.
+    page = re.sub(r"\{\{([A-Z_]+)\}\}", lambda m: values.get(m.group(1), m.group(0)), TEMPLATE.read_text())
     (out / "index.html").write_text(page)
     passing = sum(f["state"] == "pass" for f in board_flows)
     return f"board: {len(board_flows)} flows, {passing} passing on every platform, {len(history)} runs"
