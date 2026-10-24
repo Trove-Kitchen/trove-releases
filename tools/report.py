@@ -1,13 +1,13 @@
-"""Turn a private build log into a count for this public log and a comment for the private Munch PR.
+"""Turn a private build log into a count for this public log and a comment for the private trove-app PR.
 
-This repository is public and Munch is private, so nothing derived from Munch
+This repository is public and trove-app is private, so nothing derived from trove-app
 source is printed here: the workflow log gets pass/fail and counts, and the
 details (path:line and the compiler's or test's message, never source lines)
-go only to the Munch pull request.
+go only to the trove-app pull request.
 
   report.py xcode  <build.log> <out.md>        compiler errors from xcodebuild/swift
   report.py junit  <results dir> <out.md>      failing tests from JUnit XML
-  report.py post   <title> <out.md> <pr> <sha> comment on samuelalake/Munch#<pr>
+  report.py post   <title> <out.md> <pr> <sha> comment on Trove-Kitchen/trove-app#<pr>
 """
 
 import json
@@ -58,7 +58,7 @@ def junit(results: str, out: str) -> int:
 
 
 def post(title: str, out: str, pr: str, sha: str) -> None:
-    token = os.environ.get("TROVE_MUNCH_PR_COMMENT_TOKEN", "")
+    token = os.environ.get("TROVE_PR_COMMENT_TOKEN", "")
     if not pr or not token:
         print("No pull request or comment token; details stay on the runner.")
         return
@@ -69,13 +69,13 @@ def post(title: str, out: str, pr: str, sha: str) -> None:
     verdict = "failed" if details else "passed"
     body = f"**{title} {verdict}** at `{sha[:12]}` ([run]({run}))\n\n{details}\n\n---\n_Posted by trove-releases_"
     req = urllib.request.Request(
-        f"https://api.github.com/repos/samuelalake/Munch/issues/{pr}/comments",
+        f"https://api.github.com/repos/Trove-Kitchen/trove-app/issues/{pr}/comments",
         data=json.dumps({"body": body}).encode(),
         headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
-        print(f"Posted the result on the Munch pull request ({resp.status}).")
+        print(f"Posted the result on the trove-app pull request ({resp.status}).")
 
 
 if __name__ == "__main__":

@@ -1,31 +1,38 @@
 name: Trove iOS compile
 
-# Compiles Trove for the simulator at a Munch ref, with no signing, no Apple
+# Compiles Trove for the simulator at a trove-app ref, with no signing, no Apple
 # key and no backend, and runs the MunchMatching package tests. The quickest
 # answer to "does this branch build?" for agents that have no Mac.
 #
-# This repository is public and Munch is private: the build log stays on the
+# This repository is public and trove-app is private: the build log stays on the
 # runner, this log shows pass/fail and counts, and the errors (path:line and
-# the compiler's message) are posted only on the Munch pull request, when
-# pr_number is given and TROVE_MUNCH_PR_COMMENT_TOKEN is set.
+# the compiler's message) are posted only on the trove-app pull request, when
+# pr_number is given and TROVE_PR_COMMENT_TOKEN is set.
 
-run-name: 'Trove iOS compile of ${{ inputs.ref }}${{ inputs.pr_number && format('' (Munch #{0})'', inputs.pr_number) || '''' }}'
+run-name: 'Trove iOS compile of ${{ inputs.ref || ''main'' }}${{ inputs.pr_number && format('' (trove-app #{0})'', inputs.pr_number) || '''' }}'
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Munch branch, tag or commit
+        description: trove-app branch, tag or commit
         required: true
         default: main
         type: string
       pr_number:
-        description: Munch pull request to post the result on (optional)
+        description: trove-app pull request to post the result on (optional)
         required: false
         type: string
+  # Changing this check runs it once on its own pull request, against trove-app main.
+  # Pull requests from forks get no secrets, so they cannot reach the source.
+  pull_request:
+    paths:
+      - .github/workflows/ios-compile.yml
+      - .github/actions/fetch-source/**
+      - tools/report.py
 
 concurrency:
-  group: trove-ios-compile-${{ inputs.ref }}
+  group: trove-ios-compile-${{ inputs.ref || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -34,19 +41,27 @@ permissions:
 jobs:
   compile:
     runs-on: macos-15
-    environment: trove-compile
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app,trove-commerce
+
       - id: source
         uses: ./.github/actions/fetch-source
         with:
-          ref: ${{ inputs.ref }}
-          munch_key: ${{ secrets.TROVE_MUNCH_READ_KEY }}
-          commerce_key: ${{ secrets.TROVE_COMMERCE_READ_KEY }}
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ steps.source-token.outputs.token }}
+          with_commerce: 'true'
 
       - name: Show the Xcode on this Mac
         run: xcodebuild -version
@@ -81,10 +96,10 @@ jobs:
           fi
           [ $status -eq 0 ] && [ $tests -eq 0 ] && echo "ok=true" >> "$GITHUB_OUTPUT" || echo "ok=false" >> "$GITHUB_OUTPUT"
 
-      - name: Post the result on the Munch pull request, never in this log
+      - name: Post the result on the trove-app pull request, never in this log
         if: always() && steps.build.outcome == 'success'
         env:
-          TROVE_MUNCH_PR_COMMENT_TOKEN: ${{ secrets.TROVE_MUNCH_PR_COMMENT_TOKEN }}
+          TROVE_PR_COMMENT_TOKEN: ${{ secrets.TROVE_PR_COMMENT_TOKEN }}
           PR: ${{ inputs.pr_number }}
           SHA: ${{ steps.source.outputs.sha }}
         run: |

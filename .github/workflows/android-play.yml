@@ -1,0 +1,284 @@
+name: Trove Android
+
+# Builds Trove for Android from Trove-Kitchen/trove-app and sends it to the
+# Google Play internal track, never further.
+#
+# check   (no environment, no secrets): builds an unsigned bundleRelease and a
+#         release APK, then checks every 64-bit native library against Play's
+#         16 KB memory page rule (tools/check_16kb.py, plus zipalign -P 16 on
+#         the APK). Every run does this first.
+# release (environment trove-android, Samuel's review): builds again with the
+#         upload key, signs, and uses one Play edit to either validate an
+#         internal release (dry run) or commit it. Runs when dry_run is off, or
+#         when a dry run sets validate_with_play. While the upload-key secrets
+#         are empty it skips signing and upload with a notice instead of failing.
+#
+# trove-app is private and this repository is public: build logs stay on the
+# runner, and no bundle or APK is uploaded as an artifact.
+
+run-name: 'Trove Android ${{ inputs.dry_run && ''dry run'' || ''internal release'' }} of ${{ inputs.ref }} (${{ inputs.version_code }})'
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and check, but send nothing to Play
+        required: true
+        type: boolean
+        default: true
+      version_code:
+        description: versionCode for this build (must be higher than any on Play)
+        required: true
+        type: string
+      version_name:
+        description: versionName shown in Play and on the device
+        required: false
+        default: '1.0.0'
+        type: string
+      ref:
+        description: trove-app branch, tag or commit
+        required: false
+        default: main
+        type: string
+      backend:
+        description: Which backend the build talks to
+        required: true
+        type: choice
+        options: [production, staging]
+        default: production
+      validate_with_play:
+        description: On a dry run, also sign and have Play validate the edit (needs trove-android approval)
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: trove-android-${{ inputs.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check the inputs
+        env:
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          printf '%s' "$VERSION_CODE" | grep -Eq '^[1-9][0-9]{0,9}$' || { echo "version_code must be a positive whole number"; exit 1; }
+          printf '%s' "$VERSION_NAME" | grep -Eq '^[0-9A-Za-z.+-]{1,50}$' || { echo "version_name may hold letters, digits and . + - only"; exit 1; }
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ inputs.ref }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Build an unsigned release bundle and APK
+        working-directory: ${{ runner.temp }}/trove-source/android
+        env:
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          gradle --no-daemon --console=plain :app:bundleRelease :app:assembleRelease \
+            -Ptrove.versionCode="$VERSION_CODE" -Ptrove.versionName="$VERSION_NAME" \
+            > "$RUNNER_TEMP/private/gradle.log" 2>&1 || {
+              echo "The release build failed ($(grep -c '^e: ' "$RUNNER_TEMP/private/gradle.log") Kotlin errors)."
+              echo "Run Trove Android unit tests with a pr_number to get the errors on the pull request."
+              exit 1; }
+          echo "release build passed"
+
+      - name: Check 16 KB memory page support
+        working-directory: ${{ runner.temp }}/trove-source/android/app/build/outputs
+        run: |
+          python3 -I "$GITHUB_WORKSPACE/tools/check_16kb.py" \
+            bundle/release/app-release.aab apk/release/app-release-unsigned.apk
+          zipalign="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)zipalign"
+          "$zipalign" -c -P 16 4 apk/release/app-release-unsigned.apk
+          echo "zipalign -c -P 16: passed"
+
+      - name: Say what happens next
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          VALIDATE: ${{ inputs.validate_with_play }}
+        run: |
+          if [ "$DRY_RUN" = true ] && [ "$VALIDATE" != true ]; then
+            echo "::notice title=Dry run::Built and checked an unsigned bundle. Signing and Play were skipped (set validate_with_play to have Play validate it)."
+          fi
+
+      - name: Remove private source, logs and products
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private" "$RUNNER_TEMP/play-venv"
+
+  release:
+    needs: check
+    if: ${{ !inputs.dry_run || inputs.validate_with_play }}
+    runs-on: ubuntu-24.04
+    environment: trove-android
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Look for the upload key and the Play service account
+        id: keys
+        env:
+          HAS_KEYSTORE: ${{ secrets.TROVE_ANDROID_UPLOAD_KEYSTORE_B64 != '' }}
+          HAS_STORE_PASSWORD: ${{ secrets.TROVE_ANDROID_UPLOAD_STORE_PASSWORD != '' }}
+          HAS_ALIAS: ${{ secrets.TROVE_ANDROID_UPLOAD_KEY_ALIAS != '' }}
+          HAS_KEY_PASSWORD: ${{ secrets.TROVE_ANDROID_UPLOAD_KEY_PASSWORD != '' }}
+          HAS_PLAY: ${{ secrets.TROVE_PLAY_SERVICE_ACCOUNT_JSON != '' }}
+        run: |
+          if [ "$HAS_KEYSTORE$HAS_STORE_PASSWORD$HAS_ALIAS$HAS_KEY_PASSWORD" != truetruetruetrue ]; then
+            echo "::notice title=No upload key yet::TROVE_ANDROID_UPLOAD_KEYSTORE_B64, _STORE_PASSWORD, _KEY_ALIAS and _KEY_PASSWORD are not all set in trove-android. Skipped signing and upload; the check job already built and checked the bundle."
+            echo "sign=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "sign=true" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_PLAY" != true ]; then
+            echo "::notice title=No Play service account yet::TROVE_PLAY_SERVICE_ACCOUNT_JSON is not set in trove-android. The bundle will be signed and checked, but not sent to Play."
+            echo "play=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "play=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-java@v4
+        if: steps.keys.outputs.sign == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.keys.outputs.sign == 'true'
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+
+      - name: Mint a read-only token for the source
+        if: steps.keys.outputs.sign == 'true'
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+
+      - id: source
+        if: steps.keys.outputs.sign == 'true'
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ inputs.ref }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Write the build config and the upload key
+        if: steps.keys.outputs.sign == 'true'
+        working-directory: ${{ runner.temp }}/trove-source/android
+        env:
+          BACKEND: ${{ inputs.backend }}
+          SUPABASE_URL: ${{ inputs.backend == 'staging' && secrets.STAGING_SUPABASE_URL || secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ inputs.backend == 'staging' && secrets.STAGING_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
+          HAS_STAGING: ${{ secrets.STAGING_SUPABASE_URL != '' && secrets.STAGING_SUPABASE_ANON_KEY != '' }}
+          KEYSTORE_B64: ${{ secrets.TROVE_ANDROID_UPLOAD_KEYSTORE_B64 }}
+          UPLOAD_STORE_PASSWORD: ${{ secrets.TROVE_ANDROID_UPLOAD_STORE_PASSWORD }}
+          UPLOAD_KEY_ALIAS: ${{ secrets.TROVE_ANDROID_UPLOAD_KEY_ALIAS }}
+          UPLOAD_KEY_PASSWORD: ${{ secrets.TROVE_ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: |
+          echo "Backend: $BACKEND"
+          # `a && b || c` falls back to production when a staging secret is empty.
+          if [ "$BACKEND" = staging ] && [ "$HAS_STAGING" != true ]; then
+            echo "A STAGING_SUPABASE_* secret is missing from trove-android; refusing to build staging against production."; exit 1
+          fi
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::warning::No Supabase secrets in trove-android: the app would not reach a backend. Set them before a real upload."
+          fi
+          mkdir -p "$RUNNER_TEMP/private"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/private/upload.jks"
+          chmod 600 "$RUNNER_TEMP/private/upload.jks"
+          UPLOAD_STORE_FILE="$RUNNER_TEMP/private/upload.jks" python3 -I - <<'PY'
+          import os
+          def esc(v):  # java.util.Properties escaping
+              return v.replace("\\", "\\\\").replace("\n", "\\n")
+          keys = ["SUPABASE_URL", "SUPABASE_ANON_KEY", "UPLOAD_STORE_FILE",
+                  "UPLOAD_STORE_PASSWORD", "UPLOAD_KEY_ALIAS", "UPLOAD_KEY_PASSWORD"]
+          with open("local.properties", "w", encoding="utf-8") as f:
+              f.write(f"sdk.dir={esc(os.environ['ANDROID_HOME'])}\n")
+              for k in keys:
+                  f.write(f"{k}={esc(os.environ.get(k, ''))}\n")
+          os.chmod("local.properties", 0o600)
+          print("Wrote local.properties")
+          PY
+
+      - name: Build and sign the release bundle
+        if: steps.keys.outputs.sign == 'true'
+        working-directory: ${{ runner.temp }}/trove-source/android
+        env:
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          gradle --no-daemon --console=plain :app:bundleRelease \
+            -Ptrove.versionCode="$VERSION_CODE" -Ptrove.versionName="$VERSION_NAME" \
+            > "$RUNNER_TEMP/private/gradle.log" 2>&1 || { echo "The signed release build failed."; exit 1; }
+          aab=app/build/outputs/bundle/release/app-release.aab
+          jarsigner -verify "$aab" > "$RUNNER_TEMP/private/verify.log" 2>&1
+          grep -q '^jar verified' "$RUNNER_TEMP/private/verify.log" || { echo "The bundle is not signed."; exit 1; }
+          python3 -I "$GITHUB_WORKSPACE/tools/check_16kb.py" "$aab" > "$RUNNER_TEMP/private/16kb.log" \
+            || { cat "$RUNNER_TEMP/private/16kb.log"; exit 1; }
+          tail -1 "$RUNNER_TEMP/private/16kb.log"
+          echo "AAB=$PWD/$aab" >> "$GITHUB_ENV"
+          echo "Signed bundle ready."
+
+      - name: Have Play validate an internal release (dry run, publishes nothing)
+        if: steps.keys.outputs.play == 'true' && inputs.dry_run
+        env:
+          TROVE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.TROVE_PLAY_SERVICE_ACCOUNT_JSON }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/play-venv"
+          "$RUNNER_TEMP/play-venv/bin/pip" install -q --disable-pip-version-check google-auth==2.35.0 requests==2.32.3
+          "$RUNNER_TEMP/play-venv/bin/python" -I tools/play_upload.py "$AAB" validate "$VERSION_NAME ($VERSION_CODE)"
+
+      - name: Send to the internal track
+        if: steps.keys.outputs.play == 'true' && !inputs.dry_run
+        env:
+          TROVE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.TROVE_PLAY_SERVICE_ACCOUNT_JSON }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/play-venv"
+          "$RUNNER_TEMP/play-venv/bin/pip" install -q --disable-pip-version-check google-auth==2.35.0 requests==2.32.3
+          "$RUNNER_TEMP/play-venv/bin/python" -I tools/play_upload.py "$AAB" commit "$VERSION_NAME ($VERSION_CODE)"
+
+      - name: Remove private source, keys, logs and products
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private" "$RUNNER_TEMP/play-venv"
