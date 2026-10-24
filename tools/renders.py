@@ -173,6 +173,31 @@ def readme(kind: str, sha: str, run_url: str, summaries: list[dict], files: dict
     return "\n".join(lines)
 
 
+def carry_over(old_dir: Path, tree: Path, entry: dict, runs: list, summaries: list[dict], files: dict[str, list[str]],
+               kind: str, sha: str, run_url: str, tag: str) -> dict:
+    """This run's runs.json entry. A run on one platform keeps the other platforms' results for the same commit
+    (same folder): their files are copied into tree, and their verdicts and run links carry over."""
+    folder = old_dir.name
+    mine = {s["platform"] for s in summaries}
+    previous = next((r for r in runs if isinstance(r, dict) and r.get("folder") == folder), {})
+    merged = dict(entry, verdicts=dict(entry["verdicts"]), runs={p: run_url for p in mine})
+    for p, v in (previous.get("verdicts") or {}).items():
+        if p in mine or not PLATFORM.fullmatch(str(p)) or not (old_dir / f"{p}.json").is_file():
+            continue
+        merged["verdicts"][p] = v
+        merged["runs"][p] = (previous.get("runs") or {}).get(p, previous.get("run", ""))
+        if (old_dir / p).is_dir():
+            shutil.copytree(old_dir / p, tree / p, dirs_exist_ok=True)
+        shutil.copyfile(old_dir / f"{p}.json", tree / f"{p}.json")
+    kept = [json.loads((tree / f"{p}.json").read_text()) for p in sorted(set(merged["verdicts"]) - mine)]
+    if kept:
+        all_files = dict(files, **{k["platform"]: sorted(f.relative_to(tree).as_posix()
+                                                        for f in (tree / k["platform"]).rglob("*") if f.is_file())
+                                   for k in kept if (tree / k["platform"]).is_dir()})
+        (tree / "README.md").write_text(readme(kind, sha, run_url, summaries + kept, all_files, tag))
+    return merged
+
+
 def git(args: list[str], cwd: Path, auth: str, check: bool = True) -> int:
     """One git command. Its output and the auth header never reach the log; failures name the subcommand only."""
     result = subprocess.run(["git", "-c", f"http.extraheader={auth}", "-c", "core.hooksPath=/dev/null", *args],
@@ -237,8 +262,9 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
         base.mkdir(exist_ok=True)
         index = base / "runs.json"
         runs = json.loads(index.read_text()) if index.is_file() else []
+        merged = carry_over(base / folder, tree, entry, runs, summaries, files, kind, sha, run_url, tag)
         runs = [r for r in runs if isinstance(r, dict) and r.get("folder") != folder]
-        runs.insert(0, entry)
+        runs.insert(0, merged)
         dropped = [r["folder"] for r in runs[KEEP:] if isinstance(r.get("folder"), str)]
         for old in dropped:
             shutil.rmtree(base / old, ignore_errors=True)
