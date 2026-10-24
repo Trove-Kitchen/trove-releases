@@ -56,6 +56,7 @@ jobs:
           private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
           owner: Trove-Kitchen
           repositories: trove-app
+          permission-contents: read
       - id: sha
         env:
           TOKEN: ${{ steps.source-token.outputs.token }}
@@ -122,6 +123,7 @@ jobs:
           private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
           owner: Trove-Kitchen
           repositories: trove-app
+          permission-contents: read
 
       - id: source
         uses: ./.github/actions/fetch-source
@@ -229,6 +231,7 @@ jobs:
           private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
           owner: Trove-Kitchen
           repositories: trove-app,trove-commerce
+          permission-contents: read
 
       - id: source
         uses: ./.github/actions/fetch-source

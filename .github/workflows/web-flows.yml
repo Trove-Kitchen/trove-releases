@@ -65,6 +65,7 @@ jobs:
           private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
           owner: Trove-Kitchen
           repositories: trove-app
+          permission-contents: read
 
       # trove-app branch names are private and a step's inputs are echoed in this
       # public log, so the ref is read from the event and only its commit is used.

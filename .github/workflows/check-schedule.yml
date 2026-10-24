@@ -61,15 +61,28 @@ jobs:
           private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
           owner: Trove-Kitchen
           repositories: trove-app
+          permission-contents: read
 
       - name: Pick trove-app heads that changed a check's paths, with no GitHub token
         env:
           TROVE_CI_TOKEN: ${{ steps.source-token.outputs.token }}
         run: python3 -I -S -B tools/check_schedule.py pick
 
-      - name: Find each pick's pull request, if the comment token can read them
+      - name: Mint a token that can only read trove-app's pull requests
+        id: pr-token
+        # Without it the checks still dispatch, just with no pull request number.
+        continue-on-error: true
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-pull-requests: read
+
+      - name: Find each pick's pull request, with no other token
         env:
-          TROVE_PR_COMMENT_TOKEN: ${{ secrets.TROVE_PR_COMMENT_TOKEN }}
+          TROVE_PR_READ_TOKEN: ${{ steps.pr-token.outputs.token }}
         run: python3 -I -S -B tools/check_schedule.py prs
 
       - name: Dispatch the checks, with no trove-app credential
