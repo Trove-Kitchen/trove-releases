@@ -136,7 +136,9 @@ jobs:
           echo "$(ls "$out"/*.png | wc -l | tr -d ' ') screenshots, $(grep -c 'NOT running' "$out/launch.log" || true) without the app running"
           # Crash reports stay private: they go to trove-renders with the screenshots.
           find ~/Library/Logs/DiagnosticReports -name '*Munch*' -newer "$app" -exec cp {} "$out/" \; 2>/dev/null || true
-          xcrun simctl spawn "$udid" log show --last 10m --style compact --predicate 'process == "Munch"' > "$out/app.log" 2>/dev/null || true
+          xcrun simctl spawn "$udid" log show --last 15m --style compact --predicate 'process == "Munch"' > "$out/app.log" 2>/dev/null || true
+          # The gallery's runtime token check (TroveTokenCheck): token names and hex values only.
+          grep -ho 'TROVE TOKEN [A-Z]*: .*' "$out/app.log" | sort -u | head -40 || echo "TROVE TOKEN CHECK: no result in the app log"
           xcrun simctl delete "$udid"
 
       - name: Mint a write token for trove-renders
