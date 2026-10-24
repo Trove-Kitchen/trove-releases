@@ -17,11 +17,13 @@ Being public costs nothing here because there is no source and no readable secre
 | **Trove iOS** (`ios-testflight.yml`) | macOS | `trove-ios` | Archive, sign, validate with Apple; upload to TestFlight when `dry_run` is off |
 | **Trove iOS compile** (`ios-compile.yml`) | macOS | none | The app compiles for the simulator and the MunchMatching tests pass, with no signing |
 | **Trove Android unit tests** (`android-unit.yml`) | Linux | none | `:app:testDebugUnitTest` passes |
+| **Trove web tests** (`web-tests.yml`) | Linux | none | The web site's design tokens are current and pass contrast, its unit tests pass, it builds on fixture data, and its Playwright e2e tests pass in Chromium |
+| **Trove video resolver container** (`resolver-container.yml`) | Linux | none | The resolver's production image builds, starts offline, and passes its mocked API and extraction tests with no network |
 | **Trove device tests** (`device-tests.yml`) | Linux + macOS | `trove-device-tests` | trove-app's Maestro flows pass on an Android emulator and an iPhone simulator against trove-staging; recordings go to trove-renders |
 | **Trove web flows** (`web-flows.yml`) | Linux | `trove-device-tests` | trove-app's Playwright flows pass in Chromium (phone and desktop) against trove-staging; videos go to trove-renders |
 | **Trove Android** (`android-play.yml`) | Linux | `trove-android` for the release job | `bundleRelease` builds and meets Play's 16 KB page rule; signs and sends to the Play **internal** track when `dry_run` is off |
 
-The two check workflows take a trove-app `ref` and, optionally, a trove-app `pr_number`. They are built for agents that have no Mac: dispatch one at a branch and read the result. A pull request that changes a check workflow, `fetch-source` or `tools/report.py` runs that check once against trove-app `main`.
+The check workflows (iOS compile, Android unit tests, web tests, video resolver container) take a trove-app `ref` and, optionally, a trove-app `pr_number`. They are built for agents that have no Mac: dispatch one at a branch and read the result. A pull request that changes a check workflow, `fetch-source` or `tools/report.py` runs that check once against trove-app `main`.
 
 ### Nothing from trove-app is printed here
 

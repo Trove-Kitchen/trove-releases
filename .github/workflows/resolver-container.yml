@@ -1,0 +1,147 @@
+name: Trove video resolver container
+
+# Builds trove-app's video resolver (services/video-resolver) as its production
+# image at a trove-app ref, starts it the way production does with no network
+# and fabricated auth settings (tests/container_probe.py), then runs the mocked
+# API and extraction tests in a test layer over that image, also with no
+# network. Moved here from trove-app's video-resolver-container.yml, which
+# spent the private repository's Actions minutes.
+#
+# Like the other checks, this log shows pass/fail and counts only. The image's
+# package versions stay on the runner, and failing test names and messages go
+# to the trove-app pull request (tools/report.py).
+
+run-name: 'Trove video resolver container of ${{ inputs.ref || ''main'' }}${{ inputs.pr_number && format('' (trove-app #{0})'', inputs.pr_number) || '''' }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: trove-app branch, tag or commit
+        required: true
+        default: main
+        type: string
+      pr_number:
+        description: trove-app pull request to post the result on (optional)
+        required: false
+        type: string
+  # Changing this check runs it once on its own pull request, against trove-app main.
+  # Pull requests from forks get no secrets, so they cannot reach the source.
+  pull_request:
+    paths:
+      - .github/workflows/resolver-container.yml
+      - .github/actions/fetch-source/**
+      - tools/report.py
+
+concurrency:
+  group: trove-resolver-container-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Build, probe and test the image without any credential
+        id: test
+        working-directory: ${{ runner.temp }}/trove-source
+        run: |
+          private="$RUNNER_TEMP/private"
+          mkdir -p "$private/results"
+          : > "$private/errors.md"
+          svc=services/video-resolver
+          [ -d "$svc" ] || { echo "This trove-app ref has no $svc."; exit 1; }
+          set +e
+          docker build --tag trove-resolver-production:ci "$svc" > "$private/build.log" 2>&1
+          image=$?
+          echo "production image: $([ $image -eq 0 ] && echo built || echo "did not build")"
+          [ $image -eq 0 ] || echo "- The production image did not build (\`$svc/Dockerfile\`)." >> "$private/errors.md"
+          probe=1; tests=1
+          if [ $image -eq 0 ]; then
+            # Runtime versions are kept with the private logs, not printed here.
+            {
+              docker image inspect trove-resolver-production:ci --format '{{.Id}}'
+              docker run --rm --network none trove-resolver-production:ci python --version
+              docker run --rm --network none trove-resolver-production:ci ffmpeg -version
+              docker run --rm --network none trove-resolver-production:ci python -m pip freeze
+            } > "$private/versions.log" 2>&1
+            # The production command, offline, with fabricated settings: no real credential exists here.
+            docker run --detach --name resolver-probe --network none \
+              --env PORT=8097 \
+              --env SUPABASE_URL=https://auth.invalid \
+              --env SUPABASE_ANON_KEY=public-offline-test \
+              --env RESOLVER_ALLOW_LEGACY_API_KEY=true \
+              --env RESOLVER_API_KEY=legacy-offline-test \
+              --mount type=bind,source="$PWD/$svc/tests/container_probe.py",target=/tmp/container_probe.py,readonly \
+              trove-resolver-production:ci > "$private/probe.log" 2>&1 \
+              && docker exec resolver-probe python /tmp/container_probe.py >> "$private/probe.log" 2>&1
+            probe=$?
+            docker logs resolver-probe >> "$private/probe.log" 2>&1
+            echo "offline startup probe: $([ $probe -eq 0 ] && echo passed || echo failed)"
+            [ $probe -eq 0 ] || echo "- The production image failed its offline startup probe (\`$svc/tests/container_probe.py\`)." >> "$private/errors.md"
+            docker build --file "$svc/tests/Dockerfile" --tag trove-resolver-tests:ci "$svc" > "$private/test-build.log" 2>&1
+            layer=$?
+            [ $layer -eq 0 ] || echo "- The test layer did not build (\`$svc/tests/Dockerfile\`)." >> "$private/errors.md"
+            if [ $layer -eq 0 ]; then
+              # PYTEST_ADDOPTS adds a JUnit file for report.py without changing the image's command.
+              docker run --rm --network none \
+                --env PYTEST_ADDOPTS=--junitxml=/results/TEST-pytest.xml \
+                --mount type=bind,source="$PWD/$svc/tests",target=/app/tests,readonly \
+                --mount type=bind,source="$private/results",target=/results \
+                trove-resolver-tests:ci > "$private/pytest.log" 2>&1
+              tests=$?
+              echo "mocked API and extraction tests: $([ $tests -eq 0 ] && echo passed || echo failed)"
+            fi
+          fi
+          set -e
+          # Counts here; test names and messages only into the private details.
+          python3 -I "$GITHUB_WORKSPACE/tools/report.py" junit "$private/results" "$private/tests.md"
+          cat "$private/tests.md" >> "$private/errors.md"
+          if [ $image -eq 0 ] && [ $tests -ne 0 ] && [ ! -s "$private/tests.md" ]; then
+            echo "- The tests failed without a failing test (collection or the container)." >> "$private/errors.md"
+          fi
+          if [ $image -eq 0 ] && [ $probe -eq 0 ] && [ $tests -eq 0 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            [ -s "$private/errors.md" ] || echo "- The resolver container check failed." > "$private/errors.md"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post the result on the trove-app pull request, never in this log
+        if: always() && steps.test.outcome == 'success'
+        env:
+          TROVE_PR_COMMENT_TOKEN: ${{ secrets.TROVE_PR_COMMENT_TOKEN }}
+          PR: ${{ inputs.pr_number }}
+          SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          python3 -I tools/report.py post "Video resolver container" "$RUNNER_TEMP/private/errors.md" "$PR" "$SHA"
+          [ "${{ steps.test.outputs.ok }}" = "true" ]
+
+      - name: Remove private source, logs, images and the probe
+        if: always()
+        run: |
+          docker rm --force resolver-probe > /dev/null 2>&1 || true
+          docker image rm --force trove-resolver-tests:ci trove-resolver-production:ci > /dev/null 2>&1 || true
+          sudo rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private"
