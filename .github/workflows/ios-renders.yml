@@ -1,0 +1,148 @@
+name: Trove iOS renders
+
+# Builds Trove for the simulator at a trove-app ref and screenshots it on an
+# iPhone simulator in light and dark mode, with the debug launch settings the app
+# supports:
+#   - the four tabs (MUNCH_SKIP_ONBOARDING, MUNCH_SEED_DEMO, MUNCH_START_TAB)
+#   - the component gallery's three pages (MUNCH_COMPONENT_GALLERY=1|2|3)
+#
+# trove-app is private and this repository is public, so the screenshots never
+# land here: they're committed to the private Trove-Kitchen/trove-renders repo,
+# under ios/<trove-app commit>/, with a trove-kitchen-renders token. This log
+# shows counts only.
+
+run-name: 'Trove iOS renders of ${{ inputs.ref }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: trove-app branch, tag or commit
+        required: true
+        default: main
+        type: string
+      device:
+        description: Simulator device name
+        required: false
+        default: iPhone 16 Pro
+        type: string
+
+concurrency:
+  group: trove-ios-renders-${{ inputs.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: macos-15
+    timeout-minutes: 75
+    env:
+      BUNDLE_ID: ade-studios.Munch-RKCK
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app,trove-commerce
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ inputs.ref }}
+          token: ${{ steps.source-token.outputs.token }}
+          with_commerce: 'true'
+
+      - name: Build for the simulator without signing
+        working-directory: ${{ runner.temp }}/trove-source
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          if xcodebuild \
+            -workspace Munch.xcworkspace \
+            -scheme Munch \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            build > "$RUNNER_TEMP/private/build.log" 2>&1; then
+            echo "build passed"
+          else
+            python3 -I "$GITHUB_WORKSPACE/tools/report.py" xcode "$RUNNER_TEMP/private/build.log" /dev/null
+            echo "Build failed; run Trove iOS compile for the errors."
+            exit 1
+          fi
+
+      - name: Screenshot the tabs and the component gallery, light and dark
+        env:
+          DEVICE: ${{ inputs.device }}
+        run: |
+          app="$(find "$RUNNER_TEMP/derived/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -1)"
+          udid="$(xcrun simctl create trove-renders "$DEVICE")"
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b >/dev/null
+          xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3
+          xcrun simctl install "$udid" "$app"
+          out="$RUNNER_TEMP/private/renders" && mkdir -p "$out"
+          shoot() {  # name, then KEY=VALUE pairs for the app's environment
+            local name="$1"; shift
+            xcrun simctl terminate "$udid" "$BUNDLE_ID" 2>/dev/null || true
+            env "$@" xcrun simctl launch "$udid" "$BUNDLE_ID" MUNCH_SKIP_ONBOARDING >/dev/null
+            sleep 8
+            xcrun simctl io "$udid" screenshot "$out/$name.png" >/dev/null 2>&1
+          }
+          for appearance in light dark; do
+            xcrun simctl ui "$udid" appearance "$appearance"
+            for tab in recipes mealPlan grocery profile; do
+              shoot "$tab-$appearance" SIMCTL_CHILD_MUNCH_SEED_DEMO=1 SIMCTL_CHILD_MUNCH_START_TAB="$tab"
+            done
+            for page in 1 2 3; do
+              shoot "components-$page-$appearance" SIMCTL_CHILD_MUNCH_COMPONENT_GALLERY="$page"
+            done
+          done
+          echo "$(ls "$out" | wc -l | tr -d ' ') screenshots"
+          xcrun simctl delete "$udid"
+
+      - name: Mint a write token for trove-renders
+        id: renders-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_RENDERS_APP_ID }}
+          private-key: ${{ secrets.TROVE_RENDERS_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-renders
+
+      - name: Commit the screenshots to trove-renders, never to this repository
+        env:
+          TOKEN: ${{ steps.renders-token.outputs.token }}
+          SHA: ${{ steps.source.outputs.sha }}
+          REF: ${{ inputs.ref }}
+        run: |
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          dest="$RUNNER_TEMP/trove-renders"
+          git -c http.extraheader="$auth" clone -q --depth 1 https://github.com/Trove-Kitchen/trove-renders.git "$dest"
+          mkdir -p "$dest/ios/$SHA"
+          cp "$RUNNER_TEMP/private/renders/"*.png "$dest/ios/$SHA/"
+          printf '{"ref": "%s", "sha": "%s", "run": "%s"}\n' "$REF" "$SHA" "$GITHUB_RUN_ID" > "$dest/ios/$SHA/run.json"
+          cd "$dest"
+          git config user.name "trove-kitchen-renders[bot]"
+          git config user.email "trove-kitchen-renders[bot]@users.noreply.github.com"
+          git add "ios/$SHA"
+          git commit -q -m "iOS renders of $REF at ${SHA:0:12}"
+          for attempt in 1 2 3; do
+            if git -c http.extraheader="$auth" push -q origin HEAD; then echo "pushed to trove-renders ios/${SHA:0:12}"; exit 0; fi
+            git -c http.extraheader="$auth" pull -q --rebase origin HEAD
+          done
+          exit 1
+
+      - name: Remove private source, logs, products and screenshots
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private" "$RUNNER_TEMP/derived" "$RUNNER_TEMP/trove-renders"
