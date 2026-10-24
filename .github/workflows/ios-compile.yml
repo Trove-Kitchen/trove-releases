@@ -7,7 +7,7 @@ name: Trove iOS compile
 # This repository is public and trove-app is private: the build log stays on the
 # runner, this log shows pass/fail and counts, and the errors (path:line and
 # the compiler's message) are posted only on the trove-app pull request, when
-# pr_number is given and TROVE_PR_COMMENT_TOKEN is set.
+# pr_number is given, with a comment-only token from trove-kitchen-ci.
 
 run-name: 'Trove iOS compile${{ inputs.pr_number && format('' of trove-app #{0}'', inputs.pr_number) || (!inputs.ref || inputs.ref == ''main'') && '' of main'' || '''' }}'
 
@@ -56,6 +56,7 @@ jobs:
           private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
           owner: Trove-Kitchen
           repositories: trove-app,trove-commerce
+          permission-contents: read
 
       # trove-app branch names are private and a step's inputs are echoed in this
       # public log, so the ref is read from the event and only its commit is used.
@@ -124,10 +125,21 @@ jobs:
           fi
           [ $status -eq 0 ] && [ $tests -eq 0 ] && echo "ok=true" >> "$GITHUB_OUTPUT" || echo "ok=false" >> "$GITHUB_OUTPUT"
 
+      - name: Mint a token that can only comment on the trove-app pull request
+        id: comment-token
+        if: always() && steps.build.outcome == 'success' && inputs.pr_number != ''
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-pull-requests: write
+
       - name: Post the result on the trove-app pull request, never in this log
         if: always() && steps.build.outcome == 'success'
         env:
-          TROVE_PR_COMMENT_TOKEN: ${{ secrets.TROVE_PR_COMMENT_TOKEN }}
+          TROVE_PR_COMMENT_TOKEN: ${{ steps.comment-token.outputs.token }}
           PR: ${{ inputs.pr_number }}
           SHA: ${{ steps.source.outputs.sha }}
         run: |

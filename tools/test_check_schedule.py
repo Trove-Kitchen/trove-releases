@@ -229,7 +229,7 @@ class Steps(unittest.TestCase):
         self.env = mock.patch.dict(os.environ, {
             "RUNNER_TEMP": self.temp.name, "GITHUB_REPOSITORY": cs.CONTROL_REPO, "GITHUB_REF": "refs/heads/main",
             "GITHUB_EVENT_NAME": "schedule", "GH_TOKEN": "gh", "TROVE_CI_TOKEN": "ci",
-            "TROVE_PR_COMMENT_TOKEN": "pr"}, clear=False)
+            "TROVE_PR_READ_TOKEN": "pr"}, clear=False)
         self.env.start()
 
     def tearDown(self):

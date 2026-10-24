@@ -18,8 +18,8 @@ MAX_COMPARED comparisons are read.
 The job is split so that no step holds two credentials:
 - runs (GITHUB_TOKEN alone): this repository's runs of the two workflows, for the SHAs in their names.
 - pick (the trove-kitchen-ci token alone): trove-app's branches and comparisons.
-- prs (TROVE_PR_COMMENT_TOKEN alone, optional): the open pull request of each picked branch, so the
-  check can post its details there. Without it, or when it can't read pull requests, there's none.
+- prs (a trove-kitchen-ci token with pull requests: read alone): the open pull request of each
+  picked branch, so the check can post its details there. When it can't be read, there's none.
 - dispatch (GITHUB_TOKEN alone, actions: write): one POST per pick, to one of the two workflows'
   dispatches endpoint, ref main, with exactly a SHA and maybe a pull request number.
 
@@ -161,7 +161,7 @@ def app_graphql(variables, token):
 
 
 def pr_get(branch, token):
-    """The open pull requests whose head is this trove-app branch, with the comment token."""
+    """The open pull requests whose head is this trove-app branch, with the pull-request read token."""
     query = urllib.parse.urlencode({"state": "open", "head": f"{APP_OWNER}:{branch}", "per_page": "10"})
     return request(f"{API}/repos/{APP_REPO}/pulls?{query}", token)
 
@@ -418,7 +418,7 @@ def pick_step(now=None, get=app_get, graphql=app_graphql):
 
 def prs_step(get=pr_get):
     check_run()
-    token = os.environ.pop("TROVE_PR_COMMENT_TOKEN", "")
+    token = os.environ.pop("TROVE_PR_READ_TOKEN", "")
     picks = read_state(PICKS_FILE)
     if not isinstance(picks, list) or not picks:
         return
@@ -430,7 +430,7 @@ def prs_step(get=pr_get):
         found += number is not None
     write_state(PICKS_FILE, picks)
     print(f"Trove check schedule: {found} of {len(picks)} picks have an open pull request"
-          + ("" if token else " (no TROVE_PR_COMMENT_TOKEN)"))
+          + ("" if token else " (no pull-request read token)"))
 
 
 def dispatch_step(post=control_dispatch):
