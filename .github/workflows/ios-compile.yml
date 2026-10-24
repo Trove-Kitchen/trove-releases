@@ -9,7 +9,7 @@ name: Trove iOS compile
 # the compiler's message) are posted only on the trove-app pull request, when
 # pr_number is given and TROVE_PR_COMMENT_TOKEN is set.
 
-run-name: 'Trove iOS compile of ${{ inputs.ref || ''main'' }}${{ inputs.pr_number && format('' (trove-app #{0})'', inputs.pr_number) || '''' }}'
+run-name: 'Trove iOS compile${{ inputs.pr_number && format('' of trove-app #{0}'', inputs.pr_number) || (!inputs.ref || inputs.ref == ''main'') && '' of main'' || '''' }}'
 
 on:
   workflow_dispatch:
@@ -43,13 +43,13 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Mint a read-only token for the source
         id: source-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.TROVE_CI_APP_ID }}
           private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
@@ -115,7 +115,7 @@ jobs:
       - name: Mint a write token for trove-renders
         id: renders-token
         if: always() && steps.build.outputs.ok == 'false' && inputs.pr_number == ''
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.TROVE_RENDERS_APP_ID }}
           private-key: ${{ secrets.TROVE_RENDERS_APP_PRIVATE_KEY }}
