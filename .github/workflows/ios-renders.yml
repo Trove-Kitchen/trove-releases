@@ -96,8 +96,14 @@ jobs:
           shoot() {  # name, then KEY=VALUE pairs for the app's environment
             local name="$1"; shift
             xcrun simctl terminate "$udid" "$BUNDLE_ID" 2>/dev/null || true
-            env "$@" xcrun simctl launch "$udid" "$BUNDLE_ID" MUNCH_SKIP_ONBOARDING >/dev/null
+            echo "== $name" >> "$out/launch.log"
+            env "$@" xcrun simctl launch "$udid" "$BUNDLE_ID" MUNCH_SKIP_ONBOARDING >> "$out/launch.log" 2>&1 || echo "launch failed: $?" >> "$out/launch.log"
             sleep 8
+            if xcrun simctl spawn "$udid" launchctl list 2>/dev/null | grep -q "$BUNDLE_ID"; then
+              echo "running" >> "$out/launch.log"
+            else
+              echo "NOT running after 8s" >> "$out/launch.log"
+            fi
             xcrun simctl io "$udid" screenshot "$out/$name.png" >/dev/null 2>&1
           }
           for appearance in light dark; do
@@ -109,7 +115,10 @@ jobs:
               shoot "components-$page-$appearance" SIMCTL_CHILD_MUNCH_COMPONENT_GALLERY="$page"
             done
           done
-          echo "$(ls "$out" | wc -l | tr -d ' ') screenshots"
+          echo "$(ls "$out"/*.png | wc -l | tr -d ' ') screenshots, $(grep -c 'NOT running' "$out/launch.log" || true) without the app running"
+          # Crash reports stay private: they go to trove-renders with the screenshots.
+          find ~/Library/Logs/DiagnosticReports -name '*Munch*' -newer "$app" -exec cp {} "$out/" \; 2>/dev/null || true
+          xcrun simctl spawn "$udid" log show --last 10m --style compact --predicate 'process == "Munch"' > "$out/app.log" 2>/dev/null || true
           xcrun simctl delete "$udid"
 
       - name: Mint a write token for trove-renders
@@ -133,7 +142,7 @@ jobs:
           git -c http.extraheader="$auth" clone -q --depth 1 https://github.com/Trove-Kitchen/trove-renders.git "$dest"
           short="${SHA:0:12}"
           mkdir -p "$dest/$short/ios"
-          cp "$RUNNER_TEMP/private/renders/"*.png "$dest/$short/ios/"
+          cp "$RUNNER_TEMP/private/renders/"* "$dest/$short/ios/"
           python3 -I - "$dest" "$short" "$REF" "$SHA" "$GITHUB_RUN_ID" <<'PY'
           import json, os, shutil, sys, datetime
           dest, short, ref, sha, run = sys.argv[1:]
