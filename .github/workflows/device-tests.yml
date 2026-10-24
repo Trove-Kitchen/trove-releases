@@ -42,13 +42,44 @@ permissions:
   contents: read
 
 jobs:
+  resolve:
+    # One commit for both devices, so a push to the ref mid-run can't split the report.
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+      - id: sha
+        env:
+          TOKEN: ${{ steps.source-token.outputs.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or commit"; exit 1; }
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then sha="$REF"; else
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+            echo "::add-mask::$auth"
+            sha="$(git -c http.extraheader="$auth" ls-remote https://github.com/Trove-Kitchen/trove-app.git "$REF" "refs/tags/$REF^{}" | awk 'NR==1{print $1}')"
+          fi
+          printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || { echo "No commit for that ref"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "trove-app $sha"
+
   android:
+    needs: resolve
     if: inputs.platforms != 'ios'
     runs-on: ubuntu-24.04
     environment: trove-device-tests
     timeout-minutes: 90
     outputs:
       sha: ${{ steps.source.outputs.sha }}
+      sealed: ${{ steps.seal.outputs.sealed }}
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
@@ -93,7 +124,7 @@ jobs:
       - id: source
         uses: ./.github/actions/fetch-source
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.resolve.outputs.sha }}
           token: ${{ steps.source-token.outputs.token }}
 
       - name: Build the app against staging
@@ -133,6 +164,7 @@ jobs:
           script: tools/run_flows.sh android "$RUNNER_TEMP/trove-source/android/app/build/outputs/apk/debug/app-debug.apk"
 
       - name: Seal the report
+        id: seal
         env:
           TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
         run: python3 -I tools/renders.py seal android "$RUNNER_TEMP/flows-out/android"
@@ -152,12 +184,14 @@ jobs:
         run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private" "$RUNNER_TEMP/flows-out"
 
   ios:
+    needs: resolve
     if: inputs.platforms != 'android'
     runs-on: macos-15
     environment: trove-device-tests
     timeout-minutes: 90
     outputs:
       sha: ${{ steps.source.outputs.sha }}
+      sealed: ${{ steps.seal.outputs.sealed }}
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
@@ -197,7 +231,7 @@ jobs:
       - id: source
         uses: ./.github/actions/fetch-source
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.resolve.outputs.sha }}
           token: ${{ steps.source-token.outputs.token }}
           with_commerce: 'true'
 
@@ -231,6 +265,7 @@ jobs:
           xcrun simctl delete "$udid"
 
       - name: Seal the report
+        id: seal
         env:
           TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
         run: python3 -I tools/renders.py seal ios "$RUNNER_TEMP/flows-out/ios"
@@ -251,11 +286,14 @@ jobs:
 
   publish:
     # Publishes whatever was sealed, even when a device job then failed its verdict.
-    needs: [android, ios]
-    if: ${{ !cancelled() && (needs.android.outputs.sha || needs.ios.outputs.sha) }}
+    needs: [resolve, android, ios]
+    if: ${{ !cancelled() && (needs.android.outputs.sealed == 'true' || needs.ios.outputs.sealed == 'true') }}
     runs-on: ubuntu-24.04
     environment: trove-device-tests
     timeout-minutes: 20
+    concurrency:
+      group: trove-renders-publish
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -283,7 +321,7 @@ jobs:
           TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
           TROVE_RENDERS_AGE_KEY: ${{ secrets.TROVE_RENDERS_AGE_KEY }}
           TROVE_RENDERS_TOKEN: ${{ steps.renders-token.outputs.token }}
-          SHA: ${{ needs.android.outputs.sha || needs.ios.outputs.sha }}
+          SHA: ${{ needs.resolve.outputs.sha }}
         run: python3 -I tools/renders.py publish device-tests "$SHA" "$RUNNER_TEMP/sealed"
 
       - name: Remove decrypted files

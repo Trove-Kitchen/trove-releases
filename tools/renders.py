@@ -36,7 +36,10 @@ KEEP = 10
 RECIPIENT = re.compile(r"age1[0-9a-z]{58}")
 PLATFORM = re.compile(r"(ios|android|web)")
 SHA = re.compile(r"[0-9a-f]{40}")
-COMMITTED = (".png", ".jpg", ".xml", ".json", ".html", ".txt", ".md")  # never .mp4/.webm/.mov
+# Committed in the clear: screenshots and junit only. Maestro's commands-*.json
+# record typed text (the test password), so they and every other file stay
+# inside the encrypted archive.
+COMMITTED = (".png", ".jpg", ".xml")
 RECORDING = (".mp4", ".webm", ".mov")
 
 
@@ -84,16 +87,19 @@ def seal(platform: str, out_dir: str) -> None:
     if tar.wait():
         sys.exit("tar failed")
     print(f"{platform}: sealed {(sealed / f'{platform}.age').stat().st_size} bytes")
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write("sealed=true\n")
 
 
 def verdict(platform: str) -> None:
     summary = temp() / "sealed" / f"{platform}.json"
     flows = json.loads(summary.read_text())["flows"] if summary.is_file() else []
-    failed = [f["flow"] for f in flows if f["result"] == "failed"]
+    failed = [f["flow"] for f in flows if f["result"] != "passed"]
     if not flows:
         sys.exit(f"{platform}: no flow ran")
     if failed:
-        sys.exit(f"{platform}: {len(failed)} of {len(flows)} flows failed")
+        sys.exit(f"{platform}: {len(failed)} of {len(flows)} flows failed or were skipped")
     print(f"{platform}: all {len(flows)} flows passed")
 
 
@@ -108,6 +114,8 @@ def api(method: str, url: str, token: str, payload=None, data: bytes | None = No
             return resp.status, json.loads(raw) if raw else None
     except urllib.error.HTTPError as e:
         return e.code, None
+    except (urllib.error.URLError, TimeoutError) as e:
+        return 0, None
 
 
 def safe_extract(archive: Path, dest: Path) -> None:
@@ -139,9 +147,8 @@ def decrypt(sealed: Path, plain_dir: Path) -> bool:
         for archive in sorted(sealed.glob("*.age")):
             tar_path = private / (archive.stem + ".tar")
             subprocess.run(["age", "-d", "-i", str(key_file), "-o", str(tar_path), str(archive)], check=True)
-            dest = plain_dir / archive.stem
-            dest.mkdir(parents=True, exist_ok=True)
-            safe_extract(tar_path, dest)
+            plain_dir.mkdir(parents=True, exist_ok=True)
+            safe_extract(tar_path, plain_dir)  # the archive's top directory is <platform>/
             tar_path.unlink()
     finally:
         key_file.unlink(missing_ok=True)
@@ -166,9 +173,13 @@ def readme(kind: str, sha: str, run_url: str, summaries: list[dict], files: dict
     return "\n".join(lines)
 
 
-def git(args: list[str], cwd: Path, auth: str) -> str:
-    return subprocess.run(["git", "-c", f"http.extraheader={auth}", "-c", "core.hooksPath=/dev/null", *args],
-                          cwd=cwd, check=True, capture_output=True, text=True).stdout
+def git(args: list[str], cwd: Path, auth: str, check: bool = True) -> int:
+    """One git command. Its output and the auth header never reach the log; failures name the subcommand only."""
+    result = subprocess.run(["git", "-c", f"http.extraheader={auth}", "-c", "core.hooksPath=/dev/null", *args],
+                            cwd=cwd, capture_output=True, text=True)
+    if check and result.returncode:
+        sys.exit(f"git {args[0]} failed in trove-renders ({result.returncode}).")
+    return result.returncode
 
 
 def publish(kind: str, sha: str, sealed_dir: str) -> None:
@@ -196,7 +207,8 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
             p = s["platform"]
             src = plain / p
             for f in sorted(src.rglob("*")) if src.is_dir() else []:
-                if f.is_file() and f.suffix.lower() in COMMITTED and f.stat().st_size < 20 * 1024 * 1024:
+                if (f.is_file() and f.suffix.lower() in COMMITTED and not f.name.startswith("commands-")
+                        and f.stat().st_size < 20 * 1024 * 1024):
                     rel = Path(p) / f.relative_to(src)
                     (tree / rel).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(f, tree / rel)
@@ -209,30 +221,39 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
     (tree / "README.md").write_text(readme(kind, sha, run_url, summaries, files, tag))
 
     auth = "AUTHORIZATION: basic " + __import__("base64").b64encode(f"x-access-token:{token}".encode()).decode()
+    print(f"::add-mask::{auth}")
+    entry = {"folder": folder, "source_sha": sha, "run": run_url,
+             "verdicts": {s["platform"]: f"{sum(f['result'] == 'passed' for f in s['flows'])}/{len(s['flows'])}"
+                          for s in summaries}}
     work = temp() / "renders-git"
-    shutil.rmtree(work, ignore_errors=True)
-    subprocess.run(["git", "init", "-q", str(work)], check=True)
-    git(["remote", "add", "origin", f"https://github.com/{REPO}.git"], work, auth)
-    git(["fetch", "-q", "--depth", "1", "origin", "main"], work, auth)
-    git(["checkout", "-q", "-B", "main", "FETCH_HEAD"], work, auth)
-    base = work / kind
-    base.mkdir(exist_ok=True)
-    index = base / "runs.json"
-    runs = json.loads(index.read_text()) if index.is_file() else []
-    runs = [r for r in runs if isinstance(r, dict) and r.get("folder") != folder]
-    runs.insert(0, {"folder": folder, "source_sha": sha, "run": run_url,
-                    "verdicts": {s["platform"]: f"{sum(f['result'] == 'passed' for f in s['flows'])}/{len(s['flows'])}"
-                                 for s in summaries}})
-    for old in runs[KEEP:]:
-        shutil.rmtree(base / old["folder"], ignore_errors=True)
-    runs = runs[:KEEP]
-    shutil.rmtree(base / folder, ignore_errors=True)
-    shutil.copytree(tree, base / folder)
-    index.write_text(json.dumps(runs, indent=2) + "\n")
-    git(["add", "-A"], work, auth)
-    git(["-c", "user.name=trove-kitchen-renders", "-c", "user.email=renders@trove-releases.invalid",
-         "commit", "-q", "-m", f"{kind} of trove-app {sha[:12]}"], work, auth)
-    git(["push", "-q", "origin", "HEAD:refs/heads/main"], work, auth)
+    for attempt in range(4):
+        # Another publish may push first (device-tests and web-flows share main); start again from its commit.
+        shutil.rmtree(work, ignore_errors=True)
+        subprocess.run(["git", "init", "-q", str(work)], check=True)
+        git(["remote", "add", "origin", f"https://github.com/{REPO}.git"], work, auth)
+        git(["fetch", "-q", "--depth", "1", "origin", "main"], work, auth)
+        git(["checkout", "-q", "-B", "main", "FETCH_HEAD"], work, auth)
+        base = work / kind
+        base.mkdir(exist_ok=True)
+        index = base / "runs.json"
+        runs = json.loads(index.read_text()) if index.is_file() else []
+        runs = [r for r in runs if isinstance(r, dict) and r.get("folder") != folder]
+        runs.insert(0, entry)
+        dropped = [r["folder"] for r in runs[KEEP:] if isinstance(r.get("folder"), str)]
+        for old in dropped:
+            shutil.rmtree(base / old, ignore_errors=True)
+        runs = runs[:KEEP]
+        shutil.rmtree(base / folder, ignore_errors=True)
+        shutil.copytree(tree, base / folder)
+        index.write_text(json.dumps(runs, indent=2) + "\n")
+        git(["add", "-A"], work, auth)
+        git(["-c", "user.name=trove-kitchen-renders", "-c", "user.email=renders@trove-releases.invalid",
+             "commit", "-q", "-m", f"{kind} of trove-app {sha[:12]}"], work, auth)
+        if git(["push", "-q", "origin", "HEAD:refs/heads/main"], work, auth, check=False) == 0:
+            break
+        print(f"trove-renders main moved; retrying ({attempt + 1}).")
+    else:
+        sys.exit("Could not push to trove-renders after 4 tries.")
     print(f"Committed {kind}/{folder} ({sum(len(v) for v in files.values())} files).")
 
     # Recordings: the sealed archives, still encrypted, as release assets.
@@ -244,19 +265,26 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
         status, release = api("GET", f"{gh}/repos/{REPO}/releases/tags/{tag}", token)
     if status not in (200, 201) or not release:
         sys.exit(f"The trove-renders release could not be created ({status}).")
-    existing = {a["name"]: a["id"] for a in (api("GET", f"{gh}/repos/{REPO}/releases/{release['id']}/assets", token)[1] or [])}
+    status, assets = api("GET", f"{gh}/repos/{REPO}/releases/{release['id']}/assets", token)
+    existing = {a["name"]: a["id"] for a in (assets or [])}
+    failed = 0
     for archive in sorted(sealed.glob("*.age")):
         if archive.name in existing:
-            api("DELETE", f"{gh}/repos/{REPO}/releases/assets/{existing[archive.name]}", token)
+            status, _ = api("DELETE", f"{gh}/repos/{REPO}/releases/assets/{existing[archive.name]}", token)
+            if status != 204:
+                print(f"Could not replace {archive.name} ({status})."); failed += 1; continue
         status, _ = api("POST", f"https://uploads.github.com/repos/{REPO}/releases/{release['id']}/assets?name={archive.name}",
                         token, data=archive.read_bytes(), content_type="application/octet-stream")
         print(f"Uploaded {archive.name} ({status}).")
-    status, releases = api("GET", f"{gh}/repos/{REPO}/releases?per_page=100", token)
-    ours = sorted((r for r in releases or [] if r.get("tag_name", "").startswith(kind + "-")),
-                  key=lambda r: r["tag_name"], reverse=True)
-    for old in ours[KEEP:]:
-        api("DELETE", f"{gh}/repos/{REPO}/releases/{old['id']}", token)
-        api("DELETE", f"{gh}/repos/{REPO}/git/refs/tags/{old['tag_name']}", token)
+        failed += status != 201
+    # Releases follow runs.json: a release whose folder was dropped above goes too.
+    for old in dropped:
+        status, rel = api("GET", f"{gh}/repos/{REPO}/releases/tags/{kind}-{old}", token)
+        if status == 200 and rel:
+            api("DELETE", f"{gh}/repos/{REPO}/releases/{rel['id']}", token)
+            api("DELETE", f"{gh}/repos/{REPO}/git/refs/tags/{kind}-{old}", token)
+    if failed:
+        sys.exit(f"{failed} recording archive(s) did not upload.")
     print(f"https://github.com/{REPO}/tree/main/{kind}/{folder}")
 
 

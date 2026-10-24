@@ -35,6 +35,7 @@ jobs:
     timeout-minutes: 45
     outputs:
       sha: ${{ steps.source.outputs.sha }}
+      sealed: ${{ steps.seal.outputs.sealed }}
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
@@ -91,6 +92,7 @@ jobs:
             && echo "playwright passed" || echo "playwright reported failures"
 
       - name: Seal the report
+        id: seal
         env:
           TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
         run: python3 -I tools/renders.py seal web "$RUNNER_TEMP/flows-out/web"
@@ -111,10 +113,13 @@ jobs:
 
   publish:
     needs: web
-    if: ${{ !cancelled() && needs.web.outputs.sha }}
+    if: ${{ !cancelled() && needs.web.outputs.sealed == 'true' }}
     runs-on: ubuntu-24.04
     environment: trove-device-tests
     timeout-minutes: 20
+    concurrency:
+      group: trove-renders-publish
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:

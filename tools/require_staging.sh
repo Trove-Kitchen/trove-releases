@@ -9,7 +9,7 @@ case "$SUPABASE_URL" in
   *) echo "SUPABASE_URL is not trove-staging; refusing to run tests."; exit 1 ;;
 esac
 case "$RESOLVER_BASE_URL" in
-  https://*staging*) ;;
+  https://trove-video-resolver-staging.up.railway.app|https://trove-video-resolver-staging.up.railway.app/) ;;
   *) echo "RESOLVER_BASE_URL is not the staging resolver; refusing to run tests."; exit 1 ;;
 esac
 echo "Backend: trove-staging and the staging resolver."
