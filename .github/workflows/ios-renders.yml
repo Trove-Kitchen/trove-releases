@@ -5,6 +5,7 @@ name: Trove iOS renders
 # supports:
 #   - the four tabs with the shared sample account (MUNCH_SKIP_ONBOARDING,
 #     MUNCH_SCREENSHOT_SEED, MUNCH_START_TAB)
+#   - a recipe page and guided cooking (MUNCH_START_RECIPE, MUNCH_START_COOKING)
 #   - the component gallery's three pages (MUNCH_COMPONENT_GALLERY=1|2|3)
 #
 # trove-app is private and this repository is public, so the screenshots never
@@ -125,6 +126,9 @@ jobs:
             for tab in recipes mealPlan grocery profile; do
               shoot "$tab-$appearance" SIMCTL_CHILD_MUNCH_SCREENSHOT_SEED=1 SIMCTL_CHILD_MUNCH_START_TAB="$tab"
             done
+            # A recipe page and guided cooking, from the same sample account.
+            shoot "recipe-$appearance" SIMCTL_CHILD_MUNCH_SCREENSHOT_SEED=1 SIMCTL_CHILD_MUNCH_START_RECIPE=Pancakes
+            shoot "cooking-$appearance" SIMCTL_CHILD_MUNCH_SCREENSHOT_SEED=1 SIMCTL_CHILD_MUNCH_START_RECIPE=Pancakes SIMCTL_CHILD_MUNCH_START_COOKING=1
             for page in 1 2 3; do
               shoot "components-$page-$appearance" SIMCTL_CHILD_MUNCH_COMPONENT_GALLERY="$page"
             done
@@ -164,6 +168,7 @@ jobs:
           with open(os.path.join(dest, short, "README.md"), "w") as out:
               out.write(f"# iOS renders of {ref} at {short}\n\nRun {run}. Simulator screenshots, light and dark:\n\n")
               out.write("- `recipes`, `mealPlan`, `grocery`, `profile`: the four tabs with demo data\n")
+              out.write("- `recipe`, `cooking`: the Pancakes recipe page and guided cooking\n")
               out.write("- `components-1..3`: the component gallery (docs/design/components.md)\n\n")
               for f in shots:
                   out.write(f"![{f[:-4]}](ios/{f})\n")
