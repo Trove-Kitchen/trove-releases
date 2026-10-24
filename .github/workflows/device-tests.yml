@@ -59,8 +59,10 @@ jobs:
       - id: sha
         env:
           TOKEN: ${{ steps.source-token.outputs.token }}
-          REF: ${{ inputs.ref }}
         run: |
+          # trove-app branch names are private and an env block is echoed in this public log,
+          # so the ref is read from the event; only its commit is printed or passed on.
+          REF="$(jq -r '.inputs.ref // ""' "$GITHUB_EVENT_PATH")"; REF="${REF:-main}"
           printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or commit"; exit 1; }
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then sha="$REF"; else
             auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
