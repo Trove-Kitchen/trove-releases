@@ -156,7 +156,9 @@ def web_result(folder_dir, test, project):
     if not d.is_dir():
         return None
     failed = newest_png(d.glob("test-failed-*.png"))
-    return ("fail", failed, None) if failed else ("pass", newest_png(d.glob("test-finished-*.png")), None)
+    clip = folder_dir / "web" / "previews" / f"{test}-{project}.mp4"
+    clip = clip if clip.is_file() and not clip.is_symlink() else None
+    return ("fail", failed, clip) if failed else ("pass", newest_png(d.glob("test-finished-*.png")), clip)
 
 
 def thumbnail(src, dest):

@@ -163,6 +163,28 @@ def previews(src: Path, dest: Path) -> list[Path]:
     return made
 
 
+def web_previews(src: Path, dest: Path) -> list[Path]:
+    """Small MP4s of Playwright's videos, one per test and project (artifacts/<test>-<project>/video.webm).
+    The web flows type the password only into a password field, which the browser masks, in one fill."""
+    if not shutil.which("ffmpeg"):
+        return []
+    made = []
+    for video in sorted((src / "artifacts").glob("*/*.webm")):
+        if not PREVIEW_NAME.fullmatch(video.parent.name):
+            continue
+        out = dest / "previews" / f"{video.parent.name}.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(video), "-vf", "scale='min(iw,720)':-2,fps=12,setsar=1",
+                                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "32", "-pix_fmt", "yuv420p",
+                                 "-movflags", "+faststart", "-an", str(out)], capture_output=True)
+        if result.returncode or not out.is_file() or out.stat().st_size > PREVIEW_MAX:
+            out.unlink(missing_ok=True)
+            print(f"preview {video.parent.name}: not made")
+            continue
+        made.append(out)
+    return made
+
+
 def decrypt(sealed: Path, plain_dir: Path) -> bool:
     key = os.environ.pop("TROVE_RENDERS_AGE_KEY", "").strip()
     if not key:
@@ -271,7 +293,7 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
                     shutil.copyfile(f, tree / rel)
                     files.setdefault(p, []).append(rel.as_posix())
             if src.is_dir():
-                for f in previews(src, tree / p):
+                for f in (web_previews if p == "web" else previews)(src, tree / p):
                     files.setdefault(p, []).append(f.relative_to(tree).as_posix())
         shutil.rmtree(plain, ignore_errors=True)
     else:
