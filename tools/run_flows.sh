@@ -26,21 +26,35 @@ python3 -I "$tools/remove_test_imports.py" || true
 cd "$out"
 run_maestro() {
   # Cap each attempt (macOS has no timeout(1)); a hung driver otherwise eats the whole job.
-  perl -e 'alarm shift; exec @ARGV' 1800 maestro test "$src/flows" \
+  # The iOS driver (an XCTest runner) can be slow to come up on a busy runner: give it three minutes.
+  MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 perl -e 'alarm shift; exec @ARGV' 1500 maestro test "$src/flows" \
     --format junit --output "$out/report.xml" --test-output-dir "$out/maestro" \
     -e APP_ID="$app_id" \
     -e TROVE_TEST_EMAIL="$TROVE_TEST_EMAIL" -e TROVE_TEST_PASSWORD="$TROVE_TEST_PASSWORD" \
     >> "$RUNNER_TEMP/private/maestro-$platform.log" 2>&1
 }
+# The runner, not the app, failed: no report at all, or Maestro lost the device (its driver died).
+runner_failed() {
+  [ ! -s "$out/report.xml" ] || grep -q "DeviceUnreachableException\|Device became unreachable" "$out/report.xml"
+}
 run_maestro
 status=$?
-# Maestro's iOS driver sometimes fails to start and no flow runs (no report).
-# That is the runner, not the app: try once more.
-if [ ! -s "$out/report.xml" ]; then
-  echo "$platform: no flow ran (maestro exited $status); retrying once"
-  # Why it didn't start: the log's last lines, minus any line holding the test credentials (GitHub masks them too).
+if runner_failed; then
+  echo "$platform: the device or its driver failed (maestro exited $status); retrying once on a fresh start"
+  # Why: the log's last lines, minus any line holding the test credentials (GitHub masks them too).
   tail -n 25 "$RUNNER_TEMP/private/maestro-$platform.log" | grep -vF -- "$TROVE_TEST_PASSWORD" | grep -vF -- "$TROVE_TEST_EMAIL" \
     | sed "s/^/$platform: maestro: /" || true
+  rm -f "$out/report.xml"
+  if [ "$platform" = ios ]; then
+    # A dead XCTest driver survives in a running simulator: restart it and reinstall the app.
+    xcrun simctl shutdown booted > /dev/null 2>&1 || true
+    xcrun simctl boot trove-flows > /dev/null 2>&1 || true
+    xcrun simctl bootstatus trove-flows -b > /dev/null 2>&1 || true
+    xcrun simctl install booted "$app" >> "$RUNNER_TEMP/private/install.log" 2>&1 || true
+  else
+    adb reconnect > /dev/null 2>&1 || true
+    adb wait-for-device > /dev/null 2>&1 || true
+  fi
   run_maestro
   status=$?
 fi
