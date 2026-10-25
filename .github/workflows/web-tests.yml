@@ -1,0 +1,194 @@
+name: Trove web tests
+
+# The public web site's checks at a trove-app ref, on a free Linux runner, with
+# no backend and no credential: the generated design-token files are current
+# and pass their contrast checks, the unit tests (npm test) pass, the site
+# builds on fixture data, and the Playwright end-to-end tests (web/e2e) pass in
+# Chromium at phone and desktop sizes, and the flow prototypes build (docs/evidence/prototypes). Moved here from trove-app's web.yml,
+# which spent the private repository's Actions minutes.
+#
+# Like the other checks, this log shows pass/fail and counts only; failing test
+# names and messages go to the trove-app pull request (tools/report.py).
+
+run-name: 'Trove web tests${{ inputs.sha && format('' at {0}'', inputs.sha) || '''' }}${{ inputs.pr_number && format('' (trove-app #{0})'', inputs.pr_number) || '''' }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: trove-app branch, tag or full commit (never shown in the run name or log)
+        required: true
+        default: main
+        type: string
+      sha:
+        description: trove-app commit to check instead of ref (full SHA; shown in the run name)
+        required: false
+        type: string
+      pr_number:
+        description: trove-app pull request to post the result on (optional)
+        required: false
+        type: string
+  # Changing this check runs it once on its own pull request, against trove-app main.
+  # Pull requests from forks get no secrets, so they cannot reach the source.
+  pull_request:
+    paths:
+      - .github/workflows/web-tests.yml
+      - .github/actions/fetch-source/**
+      - tools/report.py
+
+concurrency:
+  # By commit or pull request, never by branch name: a group's name can show in this public log.
+  group: trove-web-tests-${{ inputs.sha || (inputs.pr_number && format('pr-{0}', inputs.pr_number)) || (github.event_name == 'pull_request' && github.ref) || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    runs-on: ubuntu-24.04  # Playwright has no Chromium build for ubuntu-latest (26.04) yet
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-contents: read
+
+      # trove-app branch names are private. The ref is read from the event, not passed
+      # through an expression (a step's inputs are echoed in this log), and resolved
+      # to its commit, so only a SHA reaches fetch-source.
+      - name: Resolve the commit to check, printing no branch name
+        id: commit
+        env:
+          TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          sha="$(jq -r '.inputs.sha // ""' "$GITHUB_EVENT_PATH")"
+          ref="$(jq -r '.inputs.ref // "main"' "$GITHUB_EVENT_PATH")"
+          if [ -n "$sha" ]; then
+            printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || { echo "sha must be a full 40-character commit"; exit 1; }
+          elif printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+            sha="$ref"
+          else
+            printf '%s' "$ref" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or full commit"; exit 1; }
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+            echo "::add-mask::$auth"
+            sha="$(git -c http.extraheader="$auth" ls-remote https://github.com/Trove-Kitchen/trove-app.git \
+              "refs/heads/$ref" "refs/tags/$ref" | awk 'NR == 1 { print $1 }')"
+            [ -n "$sha" ] || { echo "ref is not a trove-app branch, tag or full commit"; exit 1; }
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ steps.commit.outputs.sha }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Run the web checks without any credential
+        id: test
+        working-directory: ${{ runner.temp }}/trove-source/web
+        env:
+          TROVE_DATA: fixtures
+          NEXT_PUBLIC_APP_STORE_ID: '1234567890'
+        run: |
+          private="$RUNNER_TEMP/private"
+          mkdir -p "$private/results"
+          : > "$private/errors.md"
+          set +e
+          # Each stage logs to the runner only, in web.yml's order; a stage that
+          # fails stops the ones that need it.
+          node ../scripts/design-tokens/generate.mjs --check > "$private/tokens.log" 2>&1
+          tokens=$?
+          echo "design tokens: $([ $tokens -eq 0 ] && echo passed || echo failed)"
+          if [ $tokens -ne 0 ]; then
+            # Contrast failures read "FAIL <token> on <token> ..."; stale outputs are listed one path a line.
+            grep -E '^(FAIL |  )' "$private/tokens.log" | sed -E 's/^ +//; s/^/- design tokens: /' | head -30 >> "$private/errors.md"
+            [ -s "$private/errors.md" ] || echo "- The design-token check failed." >> "$private/errors.md"
+          fi
+          deps=1; unit=1; build=1; e2e=1
+          if [ $tokens -eq 0 ]; then
+            npm ci > "$private/npm-ci.log" 2>&1
+            deps=$?
+            [ $deps -eq 0 ] || echo "- \`npm ci\` failed." >> "$private/errors.md"
+          fi
+          if [ $deps -eq 0 ]; then
+            # npm test is "node --test ..."; the JUnit reporter writes TEST-unit.xml for report.py.
+            NODE_OPTIONS="--test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=$private/results/TEST-unit.xml" \
+              npm test > "$private/unit.log" 2>&1
+            unit=$?
+            echo "unit tests: $([ $unit -eq 0 ] && echo passed || echo failed)"
+            npm run build > "$private/build.log" 2>&1
+            build=$?
+            echo "site build: $([ $build -eq 0 ] && echo passed || echo failed)"
+            [ $build -eq 0 ] || echo "- \`npm run build\` failed." >> "$private/errors.md"
+          fi
+          if [ $build -eq 0 ]; then
+            npx playwright install --with-deps chromium > "$private/playwright-install.log" 2>&1
+            PLAYWRIGHT_JUNIT_OUTPUT_FILE="$private/results/TEST-e2e.xml" \
+              npx playwright test --reporter=line,junit > "$private/e2e.log" 2>&1
+            e2e=$?
+            echo "end-to-end tests: $([ $e2e -eq 0 ] && echo passed || echo failed)"
+          fi
+          # The flow prototypes (review pages): the build checks every expected path against
+          # flows.json and runs its own escaping self-test. Data and Python only; no network.
+          protos=0
+          if [ -f ../docs/evidence/prototypes/build.py ]; then
+            (cd .. && python3 -I docs/evidence/prototypes/build.py) > "$private/prototypes.log" 2>&1
+            protos=$?
+            echo "flow prototypes: $([ $protos -eq 0 ] && echo passed || echo failed)"
+            [ $protos -eq 0 ] || echo "- The flow prototypes build failed (\`python3 -I docs/evidence/prototypes/build.py\`)." >> "$private/errors.md"
+          fi
+          set -e
+          # Counts here; test names and messages only into the private details.
+          python3 -I "$GITHUB_WORKSPACE/tools/report.py" junit "$private/results" "$private/tests.md"
+          cat "$private/tests.md" >> "$private/errors.md"
+          if [ $deps -eq 0 ] && [ $unit -ne 0 ] && ! grep -q '^- `test\.' "$private/tests.md"; then
+            echo "- The unit tests failed without a failing test (a file did not load)." >> "$private/errors.md"
+          fi
+          if [ $build -eq 0 ] && [ $e2e -ne 0 ] && [ ! -s "$private/tests.md" ]; then
+            echo "- The end-to-end tests failed before any test reported (Chromium or the web server)." >> "$private/errors.md"
+          fi
+          if [ $tokens -eq 0 ] && [ $unit -eq 0 ] && [ $build -eq 0 ] && [ $e2e -eq 0 ] && [ $protos -eq 0 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            [ -s "$private/errors.md" ] || echo "- The web checks failed." > "$private/errors.md"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint a token that can only comment on the trove-app pull request
+        id: comment-token
+        if: always() && steps.test.outcome == 'success' && inputs.pr_number != ''
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-pull-requests: write
+
+      - name: Post the result on the trove-app pull request, never in this log
+        if: always() && steps.test.outcome == 'success'
+        env:
+          TROVE_PR_COMMENT_TOKEN: ${{ steps.comment-token.outputs.token }}
+          PR: ${{ inputs.pr_number }}
+          SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          python3 -I tools/report.py post "Web tests" "$RUNNER_TEMP/private/errors.md" "$PR" "$SHA"
+          [ "${{ steps.test.outputs.ok }}" = "true" ]
+
+      - name: Remove private source, logs and products
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private"

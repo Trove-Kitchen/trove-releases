@@ -2,7 +2,15 @@
 
 The release pipeline for **Trove**. This repository holds workflows and credentials. **It holds no app source.**
 
-Source lives in two private repositories, Trove-Kitchen/trove-app and Trove-Kitchen/trove-commerce. Each run clones them with a short-lived token from the **`trove-kitchen-ci`** GitHub App (contents: read on those two repositories only), minted by `actions/create-github-app-token` from `TROVE_CI_APP_ID` and `TROVE_CI_APP_PRIVATE_KEY`.
+Source lives in two private repositories, Trove-Kitchen/trove-app and Trove-Kitchen/trove-commerce. Every token for them comes from the **`trove-kitchen-ci`** GitHub App, installed on those two repositories only (contents: read, pull requests: write), minted by `actions/create-github-app-token` from `TROVE_CI_APP_ID` and `TROVE_CI_APP_PRIVATE_KEY`.
+
+Each token is short-lived, minted for one purpose, and asks only for what that purpose needs. No step holds two credentials.
+
+| Token | Scope | Used by |
+| --- | --- | --- |
+| Source | `contents: read` | Cloning the source; the schedule reading branches and comparisons |
+| Comment | `pull_requests: write` on trove-app | Posting a check's details on the pull request. Minted only when `pr_number` is given |
+| Pull-request read | `pull_requests: read` on trove-app | The schedule finding a branch's open pull request |
 
 ## Why this repo is public
 
@@ -17,11 +25,27 @@ Being public costs nothing here because there is no source and no readable secre
 | **Trove iOS** (`ios-testflight.yml`) | macOS | `trove-ios` | Archive, sign, validate with Apple; upload to TestFlight when `dry_run` is off |
 | **Trove iOS compile** (`ios-compile.yml`) | macOS | none | The app compiles for the simulator and the MunchMatching tests pass, with no signing |
 | **Trove Android unit tests** (`android-unit.yml`) | Linux | none | `:app:testDebugUnitTest` passes |
+| **Trove web tests** (`web-tests.yml`) | Linux | none | The web site's design tokens are current and pass contrast, its unit tests pass, it builds on fixture data, and its Playwright e2e tests pass in Chromium |
+| **Trove video resolver container** (`resolver-container.yml`) | Linux | none | The resolver's production image builds, starts offline, and passes its mocked API and extraction tests with no network |
+| **Trove checks on a schedule** (`check-schedule.yml`) | Linux | none | Every 15 minutes, dispatches the web tests and the video resolver container for trove-app heads that changed their paths and haven't been checked |
 | **Trove device tests** (`device-tests.yml`) | Linux + macOS | `trove-device-tests` | trove-app's Maestro flows pass on an Android emulator and an iPhone simulator against trove-staging; recordings go to trove-renders |
 | **Trove web flows** (`web-flows.yml`) | Linux | `trove-device-tests` | trove-app's Playwright flows pass in Chromium (phone and desktop) against trove-staging; videos go to trove-renders |
 | **Trove Android** (`android-play.yml`) | Linux | `trove-android` for the release job | `bundleRelease` builds and meets Play's 16 KB page rule; signs and sends to the Play **internal** track when `dry_run` is off |
 
-The two check workflows take a trove-app `ref` and, optionally, a trove-app `pr_number`. They are built for agents that have no Mac: dispatch one at a branch and read the result. A pull request that changes a check workflow, `fetch-source` or `tools/report.py` runs that check once against trove-app `main`.
+The check workflows (iOS compile, Android unit tests, web tests, video resolver container) take a trove-app `ref` and, optionally, a trove-app `pr_number`. They are built for agents that have no Mac: dispatch one at a branch and read the result. A pull request that changes a check workflow, `fetch-source` or `tools/report.py` runs that check once against trove-app `main`.
+
+### Checks on a schedule
+
+trove-app runs no Actions of its own. `check-schedule.yml` runs every 15 minutes (and by hand) and dispatches `web-tests.yml` and `resolver-container.yml` for trove-app heads, with `tools/check_schedule.py`:
+
+- **Which heads.** main, and every branch with a commit in the last 3 days. A branch counts when `main...head` changes the check's paths. For main, it's the range since the newest commit that check already ran on.
+- **Which paths.** Web tests: `web/`, `scripts/design-tokens/`, `docs/design/tokens.json`. Resolver: `services/video-resolver/`.
+- **How work is found.** Heads come from branches and comparisons, read with the contents-only token, so a branch with no pull request is checked too.
+- **When a head is skipped.** A commit runs once per check: a run named with that SHA in the last 5 days skips it. At most 3 checks are dispatched per run.
+- **Pull request numbers.** A pull-request read token from trove-kitchen-ci finds each pick's open pull request, which is passed as `pr_number`, so the details are posted there.
+- **Dry runs.** A pull request that changes the schedule runs its unit tests (`tools/test_check_schedule.py`) and a dry run that dispatches nothing.
+
+The two scheduled checks take an optional `sha` as well as `ref`. Their run names and logs show only the SHA and the pull request number, never a trove-app branch name; a `ref` is read from the event and resolved to its commit before anything prints it.
 
 ### Nothing from trove-app is printed here
 
@@ -79,8 +103,7 @@ The key is dedicated to this pipeline, so it can be revoked without disturbing t
 
 Repository secrets (every workflow):
 
-- `TROVE_CI_APP_ID`, `TROVE_CI_APP_PRIVATE_KEY` — the `trove-kitchen-ci` app
-- `TROVE_PR_COMMENT_TOKEN` — optional. With it, the check workflows post their details on the trove-app pull request; without it, results stay pass/fail in the log.
+- `TROVE_CI_APP_ID`, `TROVE_CI_APP_PRIVATE_KEY` — the `trove-kitchen-ci` app. It mints the source, comment and pull-request read tokens; no personal token is used.
 
 `trove-device-tests` environment (no reviewer; staging only):
 

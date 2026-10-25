@@ -1,0 +1,95 @@
+name: Trove checks on a schedule
+
+# Every 15 minutes, and by hand: tools/check_schedule.py dispatches web-tests.yml
+# and resolver-container.yml for trove-app heads (main and branches committed to
+# in the last 3 days) that changed those checks' paths and have no run for that
+# commit yet, at most 3 per run. This keeps the coverage trove-app's own
+# pull_request workflows gave, on this repository's free minutes.
+#
+# trove-kitchen-ci reads trove-app's contents only, so work is found from branch
+# heads, not pull requests. No step holds two credentials. This log prints counts,
+# workflow names, short SHAs and pull request numbers, never a trove-app branch
+# name. A pull request that changes the schedule runs it as a dry run: it picks
+# and dispatches nothing.
+
+run-name: Trove checks on a schedule
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/check-schedule.yml
+      - tools/check_schedule.py
+      - tools/test_check_schedule.py
+
+concurrency:
+  group: trove-check-schedule
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  schedule:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # actions: write is for the checks' dispatches alone (check_schedule.control_dispatch
+    # refuses any other write); actions: read, which it includes, lists their runs.
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Test the schedule
+        run: python3 -I -m unittest discover -s tools -p 'test_*.py'
+
+      - name: List the checks' runs of the last 5 days, with no trove-app credential
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -S -B tools/check_schedule.py runs
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-contents: read
+
+      - name: Pick trove-app heads that changed a check's paths, with no GitHub token
+        env:
+          TROVE_CI_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: python3 -I -S -B tools/check_schedule.py pick
+
+      - name: Mint a token that can only read trove-app's pull requests
+        id: pr-token
+        # Without it the checks still dispatch, just with no pull request number.
+        continue-on-error: true
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-pull-requests: read
+
+      - name: Find each pick's pull request, with no other token
+        env:
+          TROVE_PR_READ_TOKEN: ${{ steps.pr-token.outputs.token }}
+        run: python3 -I -S -B tools/check_schedule.py prs
+
+      - name: Dispatch the checks, with no trove-app credential
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -S -B tools/check_schedule.py dispatch
+
+      - name: Remove the carried picks
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-check-schedule"

@@ -54,28 +54,56 @@ jobs:
       TEAM_ID: R6A892D599
     steps:
       - name: Check out this repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Mint a read-only token for the source repos
         id: source-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.TROVE_CI_APP_ID }}
           private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
           owner: Trove-Kitchen
           repositories: trove-app,trove-commerce
+          permission-contents: read
+
+      # trove-app branch names are private and a step's inputs are echoed in this
+      # public log, so the ref is read from the event and only its commit is used.
+      - name: Resolve the ref to a commit, printing no branch name
+        id: commit
+        env:
+          TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          ref="$(jq -r '.inputs.ref // ""' "$GITHUB_EVENT_PATH")"
+          [ -n "$ref" ] || ref=main
+          if printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+            sha="$ref"
+          else
+            printf '%s' "$ref" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or full commit"; exit 1; }
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+            echo "::add-mask::$auth"
+            # A branch first, then a tag's commit.
+            sha="$(git -c http.extraheader="$auth" ls-remote https://github.com/Trove-Kitchen/trove-app.git \
+              "refs/heads/$ref" "refs/tags/$ref" | awk -v r="$ref" '
+                $2 == "refs/heads/" r { h = $1 } $2 == "refs/tags/" r "^{}" { p = $1 } $2 == "refs/tags/" r { t = $1 }
+                END { print h ? h : (p ? p : t) }')"
+          fi
+          printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || { echo "ref is not a trove-app branch, tag or full commit"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Clone the app and the grocery package
         env:
           TOKEN: ${{ steps.source-token.outputs.token }}
-          REF: ${{ inputs.ref }}
+          SHA: ${{ steps.commit.outputs.sha }}
         run: |
           auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
           echo "::add-mask::$auth"
-          git -c http.extraheader="$auth" clone --depth 1 --branch "$REF" \
-            https://github.com/Trove-Kitchen/trove-app.git app
+          # fetch takes a commit, unlike clone --branch.
+          git init -q app
+          git -C app remote add origin https://github.com/Trove-Kitchen/trove-app.git
+          git -C app -c http.extraheader="$auth" fetch -q --depth 1 origin "$SHA"
+          git -C app checkout -q FETCH_HEAD
           git -c http.extraheader="$auth" clone --depth 1 \
             https://github.com/Trove-Kitchen/trove-commerce.git app/munch-commerce
           echo "Munch     $(git -C app rev-parse --short HEAD)"
