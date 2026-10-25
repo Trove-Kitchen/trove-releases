@@ -38,6 +38,9 @@ status=$?
 # That is the runner, not the app: try once more.
 if [ ! -s "$out/report.xml" ]; then
   echo "$platform: no flow ran (maestro exited $status); retrying once"
+  # Why it didn't start: the log's last lines, minus any line holding the test credentials (GitHub masks them too).
+  tail -n 25 "$RUNNER_TEMP/private/maestro-$platform.log" | grep -vF -- "$TROVE_TEST_PASSWORD" | grep -vF -- "$TROVE_TEST_EMAIL" \
+    | sed "s/^/$platform: maestro: /" || true
   run_maestro
   status=$?
 fi
