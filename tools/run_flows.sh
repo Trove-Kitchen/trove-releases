@@ -24,27 +24,22 @@ fi
 # Same library every run: drop the test account's earlier imports of the test link.
 python3 -I "$tools/remove_test_imports.py" || true
 cd "$out"
-run_maestro() {
-  # Cap each attempt (macOS has no timeout(1)); a hung driver otherwise eats the whole job.
+# One Maestro run per flow, in file order (01-, 02-, ...), each capped at 10 minutes: Maestro's iOS driver
+# sometimes hangs (often while stopping a recording), and a hang should cost one flow, not the whole job.
+run_flow() {  # <flow file> <attempt>
+  local name; name="$(basename "$1" .yaml)"
   # The iOS driver (an XCTest runner) can be slow to come up on a busy runner: give it three minutes.
-  MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 perl -e 'alarm shift; exec @ARGV' 1500 maestro test "$src/flows" \
-    --format junit --output "$out/report.xml" --test-output-dir "$out/maestro" \
+  MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 perl -e 'alarm shift; exec @ARGV' 600 maestro test "$1" \
+    --format junit --output "$out/report-$name.xml" --test-output-dir "$out/maestro" \
     -e APP_ID="$app_id" \
     -e TROVE_TEST_EMAIL="$TROVE_TEST_EMAIL" -e TROVE_TEST_PASSWORD="$TROVE_TEST_PASSWORD" \
     >> "$RUNNER_TEMP/private/maestro-$platform.log" 2>&1
 }
-# The runner, not the app, failed: no report at all, or Maestro lost the device (its driver died).
-runner_failed() {
-  [ ! -s "$out/report.xml" ] || grep -q "DeviceUnreachableException\|Device became unreachable" "$out/report.xml"
+# The runner, not the app, failed: no report, or Maestro lost the device (its driver died).
+runner_failed() {  # <report>
+  [ ! -s "$1" ] || grep -q "DeviceUnreachableException\|Device became unreachable" "$1"
 }
-run_maestro
-status=$?
-if runner_failed; then
-  echo "$platform: the device or its driver failed (maestro exited $status); retrying once on a fresh start"
-  # Why: the log's last lines, minus any line holding the test credentials (GitHub masks them too).
-  tail -n 25 "$RUNNER_TEMP/private/maestro-$platform.log" | grep -vF -- "$TROVE_TEST_PASSWORD" | grep -vF -- "$TROVE_TEST_EMAIL" \
-    | sed "s/^/$platform: maestro: /" || true
-  rm -f "$out/report.xml"
+fresh_device() {
   if [ "$platform" = ios ]; then
     # A dead XCTest driver survives in a running simulator: restart it and reinstall the app.
     xcrun simctl shutdown booted > /dev/null 2>&1 || true
@@ -55,9 +50,23 @@ if runner_failed; then
     adb reconnect > /dev/null 2>&1 || true
     adb wait-for-device > /dev/null 2>&1 || true
   fi
-  run_maestro
-  status=$?
-fi
+}
+status=0
+for flow in "$src"/flows/[0-9]*.yaml; do
+  name="$(basename "$flow" .yaml)"
+  run_flow "$flow"; status=$?
+  if runner_failed "$out/report-$name.xml"; then
+    echo "$platform: $name: the device or its driver failed (maestro exited $status); retrying on a fresh start"
+    # Why: the log's last lines, minus any line holding the test credentials (GitHub masks them too).
+    tail -n 12 "$RUNNER_TEMP/private/maestro-$platform.log" | grep -vF -- "$TROVE_TEST_PASSWORD" | grep -vF -- "$TROVE_TEST_EMAIL" \
+      | grep -v '^\s*$' | sed "s/^/$platform: maestro: /" || true
+    rm -f "$out/report-$name.xml"
+    fresh_device
+    run_flow "$flow"; status=$?
+  fi
+  # A flow that really failed stops the run, as Maestro's continueOnFailure: false did.
+  if [ "$status" -ne 0 ]; then break; fi
+done
 echo "$platform: maestro exited $status"
 # Flow names only (each flow gets a folder when it starts), so a hang shows where it stopped.
 for d in "$out"/maestro/*/*/; do [ -d "$d" ] && echo "$platform: started  $(basename "$d")"; done
