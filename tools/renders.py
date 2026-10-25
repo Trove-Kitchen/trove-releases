@@ -41,6 +41,10 @@ SHA = re.compile(r"[0-9a-f]{40}")
 # inside the encrypted archive.
 COMMITTED = (".png", ".jpg", ".xml")
 RECORDING = (".mp4", ".webm", ".mov")
+# The exception: small previews of the recordings the runner's previewable.txt names, those that never film the
+# test password being typed (tools/previewable.py). Parts of one recording ("01-sign-in", "01-sign-in--2") join.
+PREVIEW_NAME = re.compile(r"[A-Za-z0-9_-]+")
+PREVIEW_MAX = 8 * 1024 * 1024
 
 
 def temp() -> Path:
@@ -131,6 +135,58 @@ def safe_extract(archive: Path, dest: Path) -> None:
             tar.extract(member, dest, filter="data")
 
 
+def previews(src: Path, dest: Path) -> list[Path]:
+    """Small MP4 previews under dest/previews/, one per recording previewable.txt allows, or none without ffmpeg."""
+    allowed = src / "previewable.txt"
+    if not allowed.is_file() or not shutil.which("ffmpeg"):
+        return []
+    parts: dict[str, list[Path]] = {}
+    for name in allowed.read_text().split():
+        found = sorted(src.rglob(f"{name}.mp4")) if PREVIEW_NAME.fullmatch(name) else []
+        if found:
+            parts.setdefault(name.split("--")[0], []).append(found[0])
+    made = []
+    for key, files in sorted(parts.items()):
+        out = dest / "previews" / f"{key}.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        inputs = [a for f in files for a in ("-i", str(f))]
+        joined = "".join(f"[{i}:v]scale=360:-2,fps=12,setsar=1[v{i}];" for i in range(len(files)))
+        graph = joined + "".join(f"[v{i}]" for i in range(len(files))) + f"concat=n={len(files)}:v=1:a=0[out]"
+        result = subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]",
+                                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "32", "-pix_fmt", "yuv420p",
+                                 "-movflags", "+faststart", "-an", str(out)], capture_output=True)
+        if result.returncode or not out.is_file() or out.stat().st_size > PREVIEW_MAX:
+            out.unlink(missing_ok=True)
+            print(f"preview {key}: not made")
+            continue
+        made.append(out)
+    return made
+
+
+def web_previews(src: Path, dest: Path) -> list[Path]:
+    """Small MP4s of Playwright's videos, one per test and project (artifacts/<test>-<project>/video.webm), for the
+    specs previewable.txt lists (tools/previewable_web.py: specs that never touch the password)."""
+    allowed = src / "previewable.txt"
+    if not allowed.is_file() or not shutil.which("ffmpeg"):
+        return []
+    specs = [s for s in allowed.read_text().split() if PREVIEW_NAME.fullmatch(s)]
+    made = []
+    for video in sorted((src / "artifacts").glob("*/*.webm")):
+        if not PREVIEW_NAME.fullmatch(video.parent.name) or not any(video.parent.name.startswith(s + "-") for s in specs):
+            continue
+        out = dest / "previews" / f"{video.parent.name}.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(video), "-vf", "scale='min(iw,720)':-2,fps=12,setsar=1",
+                                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "32", "-pix_fmt", "yuv420p",
+                                 "-movflags", "+faststart", "-an", str(out)], capture_output=True)
+        if result.returncode or not out.is_file() or out.stat().st_size > PREVIEW_MAX:
+            out.unlink(missing_ok=True)
+            print(f"preview {video.parent.name}: not made")
+            continue
+        made.append(out)
+    return made
+
+
 def decrypt(sealed: Path, plain_dir: Path) -> bool:
     key = os.environ.pop("TROVE_RENDERS_AGE_KEY", "").strip()
     if not key:
@@ -173,6 +229,31 @@ def readme(kind: str, sha: str, run_url: str, summaries: list[dict], files: dict
     return "\n".join(lines)
 
 
+def carry_over(old_dir: Path, tree: Path, entry: dict, runs: list, summaries: list[dict], files: dict[str, list[str]],
+               kind: str, sha: str, run_url: str, tag: str) -> dict:
+    """This run's runs.json entry. A run on one platform keeps the other platforms' results for the same commit
+    (same folder): their files are copied into tree, and their verdicts and run links carry over."""
+    folder = old_dir.name
+    mine = {s["platform"] for s in summaries}
+    previous = next((r for r in runs if isinstance(r, dict) and r.get("folder") == folder), {})
+    merged = dict(entry, verdicts=dict(entry["verdicts"]), runs={p: run_url for p in mine})
+    for p, v in (previous.get("verdicts") or {}).items():
+        if p in mine or not PLATFORM.fullmatch(str(p)) or not (old_dir / f"{p}.json").is_file():
+            continue
+        merged["verdicts"][p] = v
+        merged["runs"][p] = (previous.get("runs") or {}).get(p, previous.get("run", ""))
+        if (old_dir / p).is_dir():
+            shutil.copytree(old_dir / p, tree / p, dirs_exist_ok=True)
+        shutil.copyfile(old_dir / f"{p}.json", tree / f"{p}.json")
+    kept = [json.loads((tree / f"{p}.json").read_text()) for p in sorted(set(merged["verdicts"]) - mine)]
+    if kept:
+        all_files = dict(files, **{k["platform"]: sorted(f.relative_to(tree).as_posix()
+                                                        for f in (tree / k["platform"]).rglob("*") if f.is_file())
+                                   for k in kept if (tree / k["platform"]).is_dir()})
+        (tree / "README.md").write_text(readme(kind, sha, run_url, summaries + kept, all_files, tag))
+    return merged
+
+
 def git(args: list[str], cwd: Path, auth: str, check: bool = True) -> int:
     """One git command. Its output and the auth header never reach the log; failures name the subcommand only."""
     result = subprocess.run(["git", "-c", f"http.extraheader={auth}", "-c", "core.hooksPath=/dev/null", *args],
@@ -213,6 +294,9 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
                     (tree / rel).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(f, tree / rel)
                     files.setdefault(p, []).append(rel.as_posix())
+            if src.is_dir():
+                for f in (web_previews if p == "web" else previews)(src, tree / p):
+                    files.setdefault(p, []).append(f.relative_to(tree).as_posix())
         shutil.rmtree(plain, ignore_errors=True)
     else:
         print("::notice::TROVE_RENDERS_AGE_KEY is not set: committing verdicts only; the encrypted archives go to the release.")
@@ -237,14 +321,19 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
         base.mkdir(exist_ok=True)
         index = base / "runs.json"
         runs = json.loads(index.read_text()) if index.is_file() else []
+        # carry_over adds the other platforms' files; start each attempt from this run's files only.
+        attempt_tree = temp() / "renders-tree-attempt" / folder
+        shutil.rmtree(attempt_tree.parent, ignore_errors=True)
+        shutil.copytree(tree, attempt_tree)
+        merged = carry_over(base / folder, attempt_tree, entry, runs, summaries, files, kind, sha, run_url, tag)
         runs = [r for r in runs if isinstance(r, dict) and r.get("folder") != folder]
-        runs.insert(0, entry)
+        runs.insert(0, merged)
         dropped = [r["folder"] for r in runs[KEEP:] if isinstance(r.get("folder"), str)]
         for old in dropped:
             shutil.rmtree(base / old, ignore_errors=True)
         runs = runs[:KEEP]
         shutil.rmtree(base / folder, ignore_errors=True)
-        shutil.copytree(tree, base / folder)
+        shutil.copytree(attempt_tree, base / folder)
         index.write_text(json.dumps(runs, indent=2) + "\n")
         git(["add", "-A"], work, auth)
         git(["-c", "user.name=trove-kitchen-renders", "-c", "user.email=renders@trove-releases.invalid",

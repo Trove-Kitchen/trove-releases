@@ -30,7 +30,7 @@ runs:
         WITH_COMMERCE: ${{ inputs.with_commerce }}
       run: |
         # A ref is a branch, tag or commit; refuse anything that could be read as an option.
-        if ! printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$'; then
+        if ! [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]]; then
           echo "ref must be a branch, tag or commit"; exit 1
         fi
         if [ -z "$TOKEN" ]; then echo "No trove-kitchen-ci token"; exit 1; fi

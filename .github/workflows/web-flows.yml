@@ -4,7 +4,9 @@ name: Trove web flows
 # Chromium, phone and desktop sizes, against trove-staging, with video:
 #   logged out: browse and open a public recipe;
 #   signed in as the staging test account: import a recipe from a link,
-#   save it to a collection, view it, add it to the meal plan.
+#   save it to a collection, view it, add it to the meal plan and tick an
+#   item Stocked on the grocery list (each run first removes the account's
+#   earlier imports of that link).
 #
 # Same environment and handling as device-tests.yml: verdicts only in this
 # log, everything else age-encrypted, published to trove-renders (web-flows/)
@@ -115,6 +117,9 @@ jobs:
         run: |
           npx playwright test -c playwright.flows.config.ts > "$RUNNER_TEMP/private/playwright.log" 2>&1 \
             && echo "playwright passed" || echo "playwright reported failures"
+          # The specs whose videos never film the password; only these become clear previews at publish.
+          mkdir -p "$FLOWS_OUT"
+          python3 -I "$GITHUB_WORKSPACE/tools/previewable_web.py" flows > "$FLOWS_OUT/previewable.txt" || true
 
       - name: Seal the report
         id: seal
@@ -159,7 +164,7 @@ jobs:
           owner: Trove-Kitchen
           repositories: trove-renders
 
-      - run: sudo apt-get install -y -qq age > /dev/null
+      - run: sudo apt-get install -y -qq age ffmpeg > /dev/null
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:

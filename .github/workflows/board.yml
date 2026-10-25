@@ -1,0 +1,91 @@
+name: Trove flow board
+
+# Rebuilds the flow board (review-pages pattern) in trove-renders board/ after every device-test or web-flow
+# run: trove-app's docs/evidence/flows.json (data only, no trove-app code runs) plus the verdicts and
+# screenshots already in trove-renders. A session publishes board/ to its stable claude.ai URL
+# (trove-app docs/engineering/artifacts.md). The log shows counts only.
+
+run-name: 'Trove flow board${{ (!inputs.ref || inputs.ref == ''main'') && '' from main'' || '''' }}'
+
+on:
+  workflow_run:
+    workflows: ['Trove device tests', 'Trove web flows']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: trove-app branch, tag or commit to read docs/evidence/flows.json from
+        required: true
+        default: main
+        type: string
+
+# Its own group: sharing the publish jobs' group would let a queued board run cancel a pending publish.
+# Its fetch/rebuild/push loop already copes with a publish landing first, and only the newest board matters.
+concurrency:
+  group: trove-board
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  board:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Mint a read-only token for trove-app
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+
+      - name: Mint the trove-kitchen-renders token
+        id: renders-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_RENDERS_APP_ID }}
+          private-key: ${{ secrets.TROVE_RENDERS_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-renders
+
+      # The system package, so tools/board.py sees it under python3 -I (which ignores user site-packages).
+      - run: sudo apt-get install -y -qq python3-pil > /dev/null
+
+      - name: Build and commit the board
+        env:
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+          RENDERS_TOKEN: ${{ steps.renders-token.outputs.token }}
+        run: |
+          # trove-app branch names are private and an env block is echoed in this public log,
+          # so the ref is read from the event and never printed.
+          REF="$(jq -r '.inputs.ref // ""' "$GITHUB_EVENT_PATH")"; REF="${REF:-main}"
+          [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "ref must be a branch, tag or commit"; exit 1; }
+          flows="$RUNNER_TEMP/flows.json"
+          curl -fsS -H "Authorization: Bearer $SOURCE_TOKEN" -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/Trove-Kitchen/trove-app/contents/docs/evidence/flows.json?ref=$REF" -o "$flows" \
+            || { echo "trove-app has no docs/evidence/flows.json at that ref"; exit 1; }
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$RENDERS_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          for attempt in 1 2 3 4; do
+            work="$RUNNER_TEMP/renders"; rm -rf "$work"
+            git init -q "$work"
+            git -C "$work" -c http.extraheader="$auth" fetch -q --depth 1 https://github.com/Trove-Kitchen/trove-renders.git main
+            git -C "$work" checkout -q -B main FETCH_HEAD
+            python3 -I tools/board.py "$work" "$flows"
+            git -C "$work" add -A board
+            if git -C "$work" diff --cached --quiet; then echo "board: unchanged"; exit 0; fi
+            git -C "$work" -c user.name=trove-kitchen-renders -c user.email=renders@trove-releases.invalid \
+              commit -q -m "Flow board"
+            if git -C "$work" -c http.extraheader="$auth" push -q https://github.com/Trove-Kitchen/trove-renders.git HEAD:refs/heads/main; then
+              echo "board: committed to trove-renders board/"; exit 0
+            fi
+            echo "trove-renders main moved; retrying ($attempt)."
+          done
+          exit 1

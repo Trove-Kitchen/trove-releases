@@ -64,7 +64,7 @@ jobs:
           # trove-app branch names are private and an env block is echoed in this public log,
           # so the ref is read from the event; only its commit is printed or passed on.
           REF="$(jq -r '.inputs.ref // ""' "$GITHUB_EVENT_PATH")"; REF="${REF:-main}"
-          printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or commit"; exit 1; }
+          [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "ref must be a branch, tag or commit"; exit 1; }
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then sha="$REF"; else
             auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
             echo "::add-mask::$auth"
@@ -251,9 +251,13 @@ jobs:
           open("Munch/Supabase.xcconfig", "w").write(
               "SLASH = /\n" + s("SUPABASE_URL") + s("SUPABASE_ANON_KEY") + s("RESOLVER_BASE_URL"))
           PY
+          # Signed to run locally (ad hoc, no certificate) so the app's entitlements
+          # (app group, Keychain) apply. Built unsigned, the app came back signed out
+          # whenever a flow relaunched it.
           xcodebuild -workspace Munch.xcworkspace -scheme Munch -configuration Debug \
             -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/derived" \
-            CODE_SIGNING_ALLOWED=NO build > "$RUNNER_TEMP/private/build.log" 2>&1 \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
+            build > "$RUNNER_TEMP/private/build.log" 2>&1 \
             || { echo "The simulator build failed; run Trove iOS compile for the errors."; exit 1; }
           echo "build passed"
 
@@ -313,7 +317,7 @@ jobs:
           owner: Trove-Kitchen
           repositories: trove-renders
 
-      - run: sudo apt-get install -y -qq age > /dev/null
+      - run: sudo apt-get install -y -qq age ffmpeg > /dev/null
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
