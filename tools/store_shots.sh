@@ -62,12 +62,18 @@ capture_android() {
   demo network -e wifi show -e level 4 -e fully true
   demo network -e mobile show -e datatype none -e level 4 -e fully true
   demo notifications -e visible false
+  # The Pixel 7 image's launcher can stall under software rendering and leave an
+  # "isn't responding" dialog over every frame. The frames start the app directly,
+  # so the launcher isn't needed: turn it off.
+  adb shell pm disable-user --user 0 com.google.android.apps.nexuslauncher >> "$log" 2>&1 || true
   for entry in "${FRAMES[@]}"; do
     set -- $entry; local frame="$1" file="$2"
     adb shell pm clear "$pkg" >> "$log" 2>&1 || true
     adb shell pm grant "$pkg" android.permission.POST_NOTIFICATIONS >> "$log" 2>&1 || true
     adb shell am start -W -n "$pkg/.MainActivity" --es trove.storeShots "$frame" >> "$log" 2>&1 || echo "android: $frame: launch failed"
     sleep "$WAIT"
+    adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS >> "$log" 2>&1 || true
+    sleep 1
     adb exec-out screencap -p > "$out/captures/$file" 2>> "$log" || echo "android: $frame: screenshot failed"
     echo "android: captured $frame"
   done
