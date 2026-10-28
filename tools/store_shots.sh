@@ -16,7 +16,7 @@ shots="$src/docs/app-store/screenshots"
 mkdir -p "$out/captures" "$RUNNER_TEMP/private"
 log="$RUNNER_TEMP/private/store-shots-$platform.log"
 
-# frame name in the app, capture file (frames.json), Meal Plan / Grocery tab
+# frame name in the app and its capture file (frames.json)
 FRAMES=(
   "import 01-save-from-link.png"
   "recipe 02-recipe-source.png"
@@ -24,6 +24,8 @@ FRAMES=(
   "mealPlan 04-meal-plan-week.png"
   "grocery 05-grocery-list.png"
   "discover 06-discover.png"
+  "guides 07-guides.png"
+  "library 08-library.png"
 )
 WAIT=14  # seconds for the seed, Discover's catalog and the photos to land
 
@@ -35,7 +37,7 @@ capture_ios() {
     xcrun simctl uninstall booted "$bundle" >> "$log" 2>&1 || true
     xcrun simctl install booted "$app" >> "$log" 2>&1 || { echo "ios: install failed"; return; }
     local tab=recipes
-    case "$frame" in mealPlan|grocery) tab="$frame" ;; esac
+    case "$frame" in mealPlan|grocery) tab="$frame" ;; library) tab=profile ;; esac
     # The unsigned build has no iCloud entitlement, so CloudKit stays off.
     SIMCTL_CHILD_MUNCH_DISABLE_CLOUDKIT=1 SIMCTL_CHILD_MUNCH_STORE_SHOTS="$frame" SIMCTL_CHILD_MUNCH_START_TAB="$tab" \
       xcrun simctl launch booted "$bundle" MUNCH_SKIP_ONBOARDING >> "$log" 2>&1 || echo "ios: $frame: launch failed"
@@ -84,7 +86,8 @@ import os, sys
 from xml.sax.saxutils import quoteattr
 out, platform, status = sys.argv[1], sys.argv[2], int(sys.argv[3])
 cases = []
-for name in ["01-save-from-link", "02-recipe-source", "03-cooking-timer", "04-meal-plan-week", "05-grocery-list", "06-discover"]:
+for name in ["01-save-from-link", "02-recipe-source", "03-cooking-timer", "04-meal-plan-week", "05-grocery-list", "06-discover",
+             "07-guides", "08-library"]:
     path = os.path.join(out, "captures", name + ".png")
     ok = os.path.isfile(path) and os.path.getsize(path) > 30_000
     cases.append((f"capture {name}", ok))
