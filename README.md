@@ -31,6 +31,7 @@ Being public costs nothing here because there is no source and no readable secre
 | **Trove device tests** (`device-tests.yml`) | Linux + macOS | `trove-device-tests` | trove-app's Maestro flows pass on an Android emulator and an iPhone simulator against trove-staging; recordings go to trove-renders |
 | **Trove web flows** (`web-flows.yml`) | Linux | `trove-device-tests` | trove-app's Playwright flows pass in Chromium (phone and desktop) against trove-staging; videos go to trove-renders |
 | **Trove Android** (`android-play.yml`) | Linux | `trove-android` for the release job | `bundleRelease` builds and meets Play's 16 KB page rule; signs and sends to the Play **internal** track when `dry_run` is off |
+| **Trove database ops** (`db-ops.yml`) | Linux | `trove-staging`, or `trove-production` (approval required) | Runs one trove-app migration, content script or the expired-photo repair against staging or production. Dry run by default |
 
 The check workflows (iOS compile, Android unit tests, web tests, video resolver container) take a trove-app `ref` and, optionally, a trove-app `pr_number`. They are built for agents that have no Mac: dispatch one at a branch and read the result. A pull request that changes a check workflow, `fetch-source` or `tools/report.py` runs that check once against trove-app `main`.
 
@@ -46,6 +47,23 @@ trove-app runs no Actions of its own. `check-schedule.yml` runs every 15 minutes
 - **Dry runs.** A pull request that changes the schedule runs its unit tests (`tools/test_check_schedule.py`) and a dry run that dispatches nothing.
 
 The two scheduled checks take an optional `sha` as well as `ref`. Their run names and logs show only the SHA and the pull request number, never a trove-app branch name; a `ref` is read from the event and resolved to its commit before anything prints it.
+
+### Trove database ops
+
+The cloud lane holds no database credentials. To change the database it dispatches `db-ops.yml`:
+
+| Input | Meaning |
+| --- | --- |
+| `target` | `staging` (runs straight away) or `production` (waits for a required reviewer in `trove-production`) |
+| `task` | `migration` (`supabase/migrations/NNNN_*.sql`), `content` (`docs/content/featured-collections/*.sql`, not `preview-*`) or `mirror-covers` |
+| `path` | The file, for `migration` and `content` |
+| `apply` | **Default `false`.** A SQL dry run executes the file in a transaction and rolls it back; a mirror-covers dry run writes nothing |
+| `sha` | A full trove-app commit to take the file from instead of main, e.g. a migration whose pull request waits on it |
+| `after` | mirror-covers only: resume after this row id |
+
+Each environment holds `TROVE_DB_URL` (the session pooler URL), `TROVE_SUPABASE_URL`, `TROVE_SUPABASE_SERVICE_ROLE_KEY` and, optionally, `TROVE_RESOLVER_BASE_URL` and `TROVE_RESOLVER_ACCESS_TOKEN`. The job checks they belong to the project the target names before it runs anything. The log shows the outcome, psql's `ERROR` lines and the repair's totals, never query results or recipe titles.
+
+Example: `gh workflow run db-ops.yml -R Trove-Kitchen/trove-releases -f target=production -f task=content -f path=docs/content/featured-collections/<name>.sql -f apply=true`
 
 ### Nothing from trove-app is printed here
 
