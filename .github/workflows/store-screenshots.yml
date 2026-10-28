@@ -19,7 +19,7 @@ name: Trove store screenshots
 # Trove-Kitchen/trove-renders (store-screenshots/). Nothing is uploaded to App
 # Store Connect or Google Play.
 
-run-name: 'Trove store screenshots${{ (!inputs.ref || inputs.ref == ''main'') && '' of main'' || '''' }}'
+run-name: 'Trove store screenshots${{ github.event_name == ''workflow_dispatch'' && inputs.ref == ''main'' && '' of main'' || '''' }}'
 
 on:
   workflow_dispatch:
@@ -179,6 +179,8 @@ jobs:
         id: seal
         env:
           TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
+          # macOS tar would add AppleDouble (._*) files beside each PNG.
+          COPYFILE_DISABLE: '1'
         run: python3 -I tools/renders.py seal ios "$RUNNER_TEMP/flows-out/ios"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
