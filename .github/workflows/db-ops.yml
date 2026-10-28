@@ -1,0 +1,207 @@
+name: Trove database ops
+
+# Runs one reviewed file from trove-app against trove-staging or trove production:
+# a migration (supabase/migrations/NNNN_*.sql), a content script
+# (docs/content/featured-collections/*.sql) or the expired-photo repair
+# (services/enrichment/mirror-covers.mjs). This is how the cloud lane, which holds
+# no database credentials, gets database work done: it dispatches this workflow
+# and the credentials stay in this repository's environments.
+#
+# - production runs in the `trove-production` environment, so every run waits for
+#   a required reviewer to approve it. staging runs in `trove-staging`, with no
+#   reviewer.
+# - Only files in trove-app are run, at main or at a full commit given as `sha`
+#   (for a migration whose pull request waits on it). Nothing typed into the
+#   dispatch form is run as SQL.
+# - `apply` defaults to false. A SQL dry run executes the file inside a
+#   transaction and rolls it back, so it proves the file runs without keeping
+#   anything. A mirror-covers dry run writes nothing.
+# - Each environment's secrets are checked against the project the target names
+#   before anything runs, so a staging secret can never be used as production or
+#   the other way round.
+# - This log is public. It prints the outcome, psql's ERROR lines and the
+#   repair's totals. It never prints query results, row contents or recipe titles.
+#
+# Preview scripts (docs/content/featured-collections/preview-*.sql) print a secret
+# token, so they are refused here and stay with the local lane.
+
+run-name: 'Trove database ops: ${{ inputs.task }} on ${{ inputs.target }}${{ inputs.apply && '' (apply)'' || '' (dry run)'' }}${{ inputs.path && format('' {0}'', inputs.path) || '''' }}${{ inputs.sha && format('' at {0}'', inputs.sha) || '''' }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which project
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      task:
+        description: What to run
+        required: true
+        default: migration
+        type: choice
+        options: [migration, content, mirror-covers]
+      path:
+        description: 'For migration and content: the file, e.g. supabase/migrations/0012_recipe_saves_privacy.sql'
+        required: false
+        type: string
+      apply:
+        description: Keep the changes (off = dry run)
+        required: false
+        default: false
+        type: boolean
+      sha:
+        description: trove-app commit to take the file from instead of main (full SHA)
+        required: false
+        type: string
+      after:
+        description: 'mirror-covers only: resume after this row id (the --after the last run printed)'
+        required: false
+        type: string
+
+concurrency:
+  # One database job per project at a time; a second waits instead of cancelling.
+  group: trove-db-ops-${{ inputs.target }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.target == 'production' && 'trove-production' || 'trove-staging' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check the inputs
+        id: inputs
+        run: |
+          task="$(jq -r '.inputs.task' "$GITHUB_EVENT_PATH")"
+          path="$(jq -r '.inputs.path // ""' "$GITHUB_EVENT_PATH")"
+          sha="$(jq -r '.inputs.sha // ""' "$GITHUB_EVENT_PATH")"
+          after="$(jq -r '.inputs.after // ""' "$GITHUB_EVENT_PATH")"
+          case "$task" in
+            migration)
+              [[ "$path" =~ ^supabase/migrations/[0-9]{4}_[a-z0-9_]+\.sql$ ]] \
+                || { echo "path must be supabase/migrations/NNNN_name.sql"; exit 1; } ;;
+            content)
+              [[ "$path" =~ ^docs/content/featured-collections/[a-z0-9]+(-[a-z0-9]+)*\.sql$ ]] \
+                || { echo "path must be docs/content/featured-collections/<name>.sql"; exit 1; }
+              [[ "$(basename "$path")" != preview-* ]] \
+                || { echo "Preview scripts print a secret token; the local lane runs them."; exit 1; } ;;
+            mirror-covers)
+              [ -z "$path" ] || { echo "mirror-covers takes no path"; exit 1; }
+              [ -z "$after" ] || [[ "$after" =~ ^[A-Za-z0-9_-]{1,200}$ ]] \
+                || { echo "after must be a row id"; exit 1; } ;;
+            *) echo "unknown task"; exit 1 ;;
+          esac
+          [ -z "$sha" ] || [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "sha must be a full 40-character commit"; exit 1; }
+          echo "ref=${sha:-main}" >> "$GITHUB_OUTPUT"
+
+      - name: Check the secrets match the target
+        env:
+          TARGET: ${{ inputs.target }}
+          DB_URL: ${{ secrets.TROVE_DB_URL }}
+          SUPABASE_URL: ${{ secrets.TROVE_SUPABASE_URL }}
+          SERVICE_ROLE: ${{ secrets.TROVE_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          case "$TARGET" in
+            production) want=pfkhrnbgxaamrugdlqxm ;;
+            staging) want=kcmldknrfijrhacnqwjx ;;
+            *) echo "unknown target"; exit 1 ;;
+          esac
+          [ -n "$DB_URL" ] && [ -n "$SUPABASE_URL" ] && [ -n "$SERVICE_ROLE" ] \
+            || { echo "This environment is missing TROVE_DB_URL, TROVE_SUPABASE_URL or TROVE_SUPABASE_SERVICE_ROLE_KEY."; exit 1; }
+          [[ "$SUPABASE_URL" == "https://$want.supabase.co" ]] \
+            || { echo "TROVE_SUPABASE_URL is not the $TARGET project."; exit 1; }
+          [[ "$DB_URL" == *"$want"* ]] \
+            || { echo "TROVE_DB_URL is not the $TARGET project."; exit 1; }
+          echo "secrets match $TARGET ($want)"
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-contents: read
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ steps.inputs.outputs.ref }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Run the SQL file
+        if: inputs.task != 'mirror-covers'
+        working-directory: ${{ runner.temp }}/trove-source
+        env:
+          DB_URL: ${{ secrets.TROVE_DB_URL }}
+          FILE: ${{ inputs.path }}
+          APPLY: ${{ inputs.apply }}
+        run: |
+          [ -f "$FILE" ] || { echo "That file is not in trove-app at this commit."; exit 1; }
+          log="$RUNNER_TEMP/psql.log"
+          end=rollback; [ "$APPLY" = "true" ] && end=commit
+          set +e
+          { echo 'begin;'; cat "$FILE"; echo; echo "$end;"; } \
+            | psql "$DB_URL" -X -q -v ON_ERROR_STOP=1 -o /dev/null > "$log" 2>&1
+          status=$?
+          set -e
+          if [ $status -ne 0 ]; then
+            echo "The file failed and nothing was kept. psql's errors:"
+            grep -E 'ERROR:' "$log" | cut -c1-300 || true
+            rm -f "$log"
+            exit 1
+          fi
+          rm -f "$log"
+          if [ "$end" = commit ]; then
+            psql "$DB_URL" -X -q -c "notify pgrst, 'reload schema';" > /dev/null
+            echo "Applied and committed. PostgREST was told to reload its schema."
+          else
+            echo "Dry run: the file ran without errors and was rolled back. Nothing was kept."
+          fi
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: inputs.task == 'mirror-covers'
+        with:
+          node-version: '22'
+
+      - name: Repair expiring photos
+        if: inputs.task == 'mirror-covers'
+        working-directory: ${{ runner.temp }}/trove-source/services/enrichment
+        env:
+          SUPABASE_URL: ${{ secrets.TROVE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TROVE_SUPABASE_SERVICE_ROLE_KEY }}
+          RESOLVER_BASE_URL: ${{ secrets.TROVE_RESOLVER_BASE_URL }}
+          RESOLVER_ACCESS_TOKEN: ${{ secrets.TROVE_RESOLVER_ACCESS_TOKEN }}
+          APPLY: ${{ inputs.apply }}
+          AFTER: ${{ inputs.after }}
+        run: |
+          args=()
+          [ "$APPLY" = "true" ] && args+=(--apply)
+          [ -n "$AFTER" ] && args+=(--after "$AFTER")
+          log="$RUNNER_TEMP/mirror.log"
+          set +e
+          node mirror-covers.mjs "${args[@]}" > "$log" 2>&1
+          status=$?
+          set -e
+          # Totals only: the per-row lines name recipes.
+          grep -E 'expiring photos? to copy|^(Would copy|Copied) |^More may remain' "$log" | sed -E 's/^Dry run \(pass --apply to write\)\. //' || true
+          if [ $status -ne 0 ]; then
+            echo "mirror-covers exited with status $status."
+            grep -ciE 'error|failed' "$log" | sed 's/^/error lines: /' || true
+          fi
+          rm -f "$log"
+          exit $status
+
+      - name: Remove private source
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/psql.log" "$RUNNER_TEMP/mirror.log"
