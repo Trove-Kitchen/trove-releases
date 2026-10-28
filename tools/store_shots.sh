@@ -27,7 +27,7 @@ FRAMES=(
   "guides 07-guides.png"
   "library 08-library.png"
 )
-WAIT=14  # seconds for the seed, Discover's catalog and the photos to land
+WAIT=18  # seconds for the seed, Discover's catalog and the photos to land
 
 capture_ios() {
   local app="$1" bundle=ade-studios.Munch-RKCK
@@ -56,12 +56,17 @@ capture_android() {
   adb shell cmd overlay enable com.android.internal.systemui.navbar.gestural >> "$log" 2>&1 || true
   adb shell settings put global sysui_demo_allowed 1 >> "$log" 2>&1
   demo() { adb shell am broadcast -a com.android.systemui.demo -e command "$@" >> "$log" 2>&1; }
-  demo enter
-  demo clock -e hhmm 0941
-  demo battery -e level 100 -e plugged false -e powersave false
-  demo network -e wifi show -e level 4 -e fully true
-  demo network -e mobile show -e datatype none -e level 4 -e fully true
-  demo notifications -e visible false
+  # SystemUI can restart while the emulator is busy and drop demo mode, so this
+  # runs again before every screenshot.
+  statusbar() {
+    demo enter
+    demo clock -e hhmm 0941
+    demo battery -e level 100 -e plugged false -e powersave false
+    demo network -e wifi show -e level 4 -e fully true
+    demo network -e mobile show -e datatype none -e level 4 -e fully true
+    demo notifications -e visible false
+  }
+  statusbar
   # The Pixel 7 image's launcher can stall under software rendering and leave an
   # "isn't responding" dialog over every frame. The frames start the app directly,
   # so the launcher isn't needed: turn it off.
@@ -73,7 +78,8 @@ capture_android() {
     adb shell am start -W -n "$pkg/.MainActivity" --es trove.storeShots "$frame" >> "$log" 2>&1 || echo "android: $frame: launch failed"
     sleep "$WAIT"
     adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS >> "$log" 2>&1 || true
-    sleep 1
+    statusbar
+    sleep 2
     adb exec-out screencap -p > "$out/captures/$file" 2>> "$log" || echo "android: $frame: screenshot failed"
     echo "android: captured $frame"
   done
