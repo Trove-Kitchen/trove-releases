@@ -2,7 +2,8 @@ name: Trove store screenshots
 
 # trove-app's App Store and Google Play screenshots, from the real app:
 #   - iOS: an iPhone 6.9-inch simulator (1320x2868), status bar at 9:41 and full battery
-#   - Android: a 1080x1920 (9:16) emulator, the same status bar through demo mode
+#   - Android: a Pixel 7 emulator (1080x2400), the same status bar through demo mode;
+#     build.mjs frames it on a 1080x2160 (1:2) Play canvas
 # Each frame launches a fresh DEBUG install with the store-screenshot account
 # (MUNCH_STORE_SHOTS on iOS, the trove.storeShots extra on Android), which seeds
 # TheMealDB recipes on the device: saved recipes, a week planned, a grocery list
@@ -255,13 +256,13 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Capture on a 1080x1920 emulator
+      - name: Capture on a Pixel 7 emulator (1080x2400)
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: 34
           arch: x86_64
           target: google_apis
-          profile: pixel_2
+          profile: pixel_7
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: tools/store_shots.sh capture android "$RUNNER_TEMP/trove-source/android/app/build/outputs/apk/debug/app-debug.apk"
