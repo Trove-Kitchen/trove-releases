@@ -61,7 +61,7 @@ The cloud lane holds no database credentials. To change the database it dispatch
 | `sha` | A full trove-app commit to take the file from instead of main, e.g. a migration whose pull request waits on it |
 | `after` | mirror-covers only: resume after this row id |
 
-Each environment holds `TROVE_DB_URL` (the session pooler URL), `TROVE_SUPABASE_URL`, `TROVE_SUPABASE_SERVICE_ROLE_KEY` and, optionally, `TROVE_RESOLVER_BASE_URL` and `TROVE_RESOLVER_ACCESS_TOKEN`. The job checks they belong to the project the target names before it runs anything. The log shows the outcome, psql's `ERROR` lines and the repair's totals, never query results or recipe titles.
+Each environment holds `TROVE_DB_URL` (the session pooler URL), `TROVE_SUPABASE_URL`, `TROVE_SUPABASE_SERVICE_ROLE_KEY` and, optionally, `TROVE_RESOLVER_BASE_URL` with `TROVE_RESOLVER_SERVICE_TOKEN` (the resolver's `/preview`-only service token, the same value as `RESOLVER_SERVICE_TOKEN` on that resolver) or `TROVE_RESOLVER_ACCESS_TOKEN` (a user session, which expires). mirror-covers needs one of them to replace expired Instagram/TikTok photos, because Instagram's oEmbed doesn't answer from GitHub's runners. The job checks they belong to the project the target names before it runs anything. The log shows the outcome, psql's `ERROR` lines and the repair's totals, never query results or recipe titles.
 
 Example: `gh workflow run db-ops.yml -R Trove-Kitchen/trove-releases -f target=production -f task=content -f path=docs/content/featured-collections/<name>.sql -f apply=true`
 
