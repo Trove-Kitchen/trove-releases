@@ -24,6 +24,12 @@ name: Trove database ops
 #
 # Preview scripts (docs/content/featured-collections/preview-*.sql) print a secret
 # token, so they are refused here and stay with the local lane.
+#
+# mirror-covers asks the video resolver's POST /preview for a fresh thumbnail when a
+# saved Instagram/TikTok link has expired (Instagram's oEmbed doesn't answer from
+# GitHub's runners). It authenticates with TROVE_RESOLVER_SERVICE_TOKEN, a token the
+# resolver accepts on /preview only. The script prints which credential it used,
+# never the value. Without it the repair runs as before, with the resolver off.
 
 run-name: 'Trove database ops: ${{ inputs.task }} on ${{ inputs.target }}${{ inputs.apply && '' (apply)'' || '' (dry run)'' }}${{ inputs.path && format('' {0}'', inputs.path) || '''' }}${{ inputs.sha && format('' at {0}'', inputs.sha) || '''' }}'
 
@@ -182,6 +188,8 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TROVE_SUPABASE_SERVICE_ROLE_KEY }}
           RESOLVER_BASE_URL: ${{ secrets.TROVE_RESOLVER_BASE_URL }}
           RESOLVER_ACCESS_TOKEN: ${{ secrets.TROVE_RESOLVER_ACCESS_TOKEN }}
+          # /preview-only service token; used when TROVE_RESOLVER_ACCESS_TOKEN is unset. Optional.
+          RESOLVER_SERVICE_TOKEN: ${{ secrets.TROVE_RESOLVER_SERVICE_TOKEN }}
           APPLY: ${{ inputs.apply }}
           AFTER: ${{ inputs.after }}
         run: |
@@ -193,8 +201,9 @@ jobs:
           node mirror-covers.mjs "${args[@]}" > "$log" 2>&1
           status=$?
           set -e
-          # Totals only: the per-row lines name recipes.
-          grep -E 'expiring photos? to copy|^(Would copy|Copied) |^More may remain' "$log" | sed -E 's/^Dry run \(pass --apply to write\)\. //' || true
+          # Totals, which resolver credential was used (its name, never its value) and
+          # a rejected credential's name. The per-row lines name recipes, so they stay here.
+          grep -E '^Resolver /preview: |expiring photos? to copy|^(Would copy|Copied) |^More may remain|^The resolver rejected RESOLVER_[A-Z_]+ ' "$log" | sed -E 's/^Dry run \(pass --apply to write\)\. //' || true
           if [ $status -ne 0 ]; then
             echo "mirror-covers exited with status $status."
             grep -ciE 'error|failed' "$log" | sed 's/^/error lines: /' || true
