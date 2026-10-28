@@ -1,0 +1,346 @@
+name: Trove store screenshots
+
+# trove-app's App Store and Google Play screenshots, from the real app:
+#   - iOS: an iPhone 6.9-inch simulator (1320x2868), status bar at 9:41 and full battery
+#   - Android: a 1080x1920 (9:16) emulator, the same status bar through demo mode
+# Each frame launches a fresh DEBUG install with the store-screenshot account
+# (MUNCH_STORE_SHOTS on iOS, the trove.storeShots extra on Android), which seeds
+# TheMealDB recipes on the device: saved recipes, a week planned, a grocery list
+# with two lines Stocked, a full Discover, and the Import sheet with a link read.
+# The builds carry no Supabase config, so nothing reaches staging or production;
+# Android's resolver points at a .invalid host for the same reason.
+# Then trove-app's docs/app-store/screenshots/build.mjs frames them with the
+# captions in frames.json, plus a stamped proof set with a contact sheet.
+#
+# This repository is public and trove-app is private. The device jobs print
+# frame names and verdicts only, and hand on everything else encrypted to
+# TROVE_RENDERS_AGE_RECIPIENT as workflow artifacts (sealed-ios, sealed-android).
+# The publish job decrypts them and commits the captures and framed sets to
+# Trove-Kitchen/trove-renders (store-screenshots/). Nothing is uploaded to App
+# Store Connect or Google Play.
+
+run-name: 'Trove store screenshots${{ github.event_name == ''workflow_dispatch'' && inputs.ref == ''main'' && '' of main'' || '''' }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: trove-app branch, tag or commit
+        required: true
+        default: main
+        type: string
+      platforms:
+        description: Which devices
+        required: true
+        type: choice
+        options: [both, ios, android]
+        default: both
+  pull_request:
+    paths:
+      - .github/workflows/store-screenshots.yml
+      - tools/store_shots.sh
+
+concurrency:
+  # By run, never by branch name: a group's name can show in this public log.
+  group: trove-store-screenshots-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PLAYWRIGHT_VERSION: 1.56.1
+  # Inter 4.1 (rsms/inter), for the captions: Inter Display Black and Inter Bold.
+  INTER_URL: https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip
+  INTER_SHA256: 9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e
+
+jobs:
+  resolve:
+    # One commit for both devices.
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-contents: read
+      - id: sha
+        env:
+          TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          # trove-app branch names are private and an env block is echoed in this public log,
+          # so the ref is read from the event; only its commit is printed or passed on.
+          REF="$(jq -r '.inputs.ref // ""' "$GITHUB_EVENT_PATH")"; REF="${REF:-main}"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          # A pull request here runs against the trove-app branch of the same name when
+          # there is one (the two halves of one change), otherwise against main.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && [[ "$GITHUB_HEAD_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] \
+            && git -c http.extraheader="$auth" ls-remote --exit-code https://github.com/Trove-Kitchen/trove-app.git "refs/heads/$GITHUB_HEAD_REF" > /dev/null; then
+            REF="$GITHUB_HEAD_REF"
+          fi
+          [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "ref must be a branch, tag or commit"; exit 1; }
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then sha="$REF"; else
+            sha="$(git -c http.extraheader="$auth" ls-remote https://github.com/Trove-Kitchen/trove-app.git "$REF" "refs/tags/$REF^{}" | awk 'NR==1{print $1}')"
+          fi
+          printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || { echo "No commit for that ref"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "trove-app $sha"
+
+  ios:
+    needs: resolve
+    if: inputs.platforms != 'android'
+    runs-on: macos-26
+    environment: trove-device-tests
+    timeout-minutes: 75
+    outputs:
+      sealed: ${{ steps.seal.outputs.sealed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install age
+        run: brew install age > /dev/null
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app,trove-commerce
+          permission-contents: read
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ steps.source-token.outputs.token }}
+          with_commerce: 'true'
+
+      - name: Use the newest Xcode on this runner
+        run: |
+          latest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -n "$latest" ]; then sudo xcode-select -s "$latest"; fi
+          xcodebuild -version | head -1
+
+      - name: Build a DEBUG app with no backend, for the simulator
+        working-directory: ${{ runner.temp }}/trove-source
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          # fetch-source leaves an empty Supabase.xcconfig: no Supabase, no resolver.
+          xcodebuild -workspace Munch.xcworkspace -scheme Munch -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/derived" \
+            CODE_SIGNING_ALLOWED=NO build > "$RUNNER_TEMP/private/build.log" 2>&1 \
+            || { python3 -I "$GITHUB_WORKSPACE/tools/report.py" xcode "$RUNNER_TEMP/private/build.log" /dev/null || true
+                 echo "The simulator build failed; run Trove iOS compile for the errors."; exit 1; }
+          echo "build passed"
+
+      - name: Capture on an iPhone 6.9-inch simulator
+        run: |
+          app="$(find "$RUNNER_TEMP/derived/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -1)"
+          udid=""
+          for device in "iPhone 17 Pro Max" "iPhone 16 Pro Max" "iPhone 16 Plus"; do
+            udid="$(xcrun simctl create trove-store "$device" 2>/dev/null)" && { echo "simulator: $device"; break; }
+          done
+          [ -n "$udid" ] || { echo "No 6.9-inch iPhone simulator on this runner"; exit 1; }
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b > /dev/null
+          xcrun simctl ui "$udid" appearance light
+          xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
+            --cellularMode active --cellularBars 4 --operatorName '' --batteryState charged --batteryLevel 100
+          tools/store_shots.sh capture ios "$app"
+          xcrun simctl delete "$udid"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Frame with the captions
+        run: |
+          fonts="$RUNNER_TEMP/inter" && mkdir -p "$fonts"
+          curl -fsSL -o "$RUNNER_TEMP/inter.zip" "$INTER_URL"
+          echo "$INTER_SHA256  $RUNNER_TEMP/inter.zip" | shasum -a 256 -c - > /dev/null
+          unzip -qjo "$RUNNER_TEMP/inter.zip" extras/otf/InterDisplay-Black.otf extras/otf/Inter-Bold.otf -d "$fonts"
+          cd "$RUNNER_TEMP/trove-source/docs/app-store/screenshots"
+          npm i --no-save --silent "playwright@$PLAYWRIGHT_VERSION" > "$RUNNER_TEMP/private/npm.log" 2>&1
+          npx playwright install chromium > "$RUNNER_TEMP/private/playwright.log" 2>&1
+          "$GITHUB_WORKSPACE/tools/store_shots.sh" frame ios "$fonts"
+
+      - name: Seal the screenshots
+        id: seal
+        env:
+          TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
+          # macOS tar would add AppleDouble (._*) files beside each PNG.
+          COPYFILE_DISABLE: '1'
+        run: python3 -I tools/renders.py seal ios "$RUNNER_TEMP/flows-out/ios"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sealed-ios
+          path: ${{ runner.temp }}/sealed/ios.*
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Fail if a capture or the framing failed
+        run: python3 -I tools/renders.py verdict ios
+
+      - name: Remove private source, logs, products and screenshots
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private" "$RUNNER_TEMP/flows-out" "$RUNNER_TEMP/derived"
+
+  android:
+    needs: resolve
+    if: inputs.platforms != 'ios'
+    runs-on: ubuntu-24.04
+    environment: trove-device-tests
+    timeout-minutes: 75
+    outputs:
+      sealed: ${{ steps.seal.outputs.sealed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
+        with:
+          gradle-version: '8.11.1'
+          cache-disabled: true
+
+      - name: Install age
+        run: sudo apt-get install -y -qq age > /dev/null
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-contents: read
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Build a DEBUG app with no backend
+        working-directory: ${{ runner.temp }}/trove-source/android
+        run: |
+          mkdir -p "$RUNNER_TEMP/private"
+          # No Supabase, and a resolver host that can't resolve, so no backend is reachable.
+          printf 'sdk.dir=%s\nRESOLVER_BASE_URL=https://resolver.invalid\n' "$ANDROID_HOME" > local.properties
+          gradle --no-daemon --console=plain :app:assembleDebug > "$RUNNER_TEMP/private/gradle.log" 2>&1 \
+            || { echo "The debug build failed; run Trove Android unit tests for the errors."; exit 1; }
+          echo "build passed"
+
+      - name: Let the emulator use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules > /dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Capture on a 1080x1920 emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: tools/store_shots.sh capture android "$RUNNER_TEMP/trove-source/android/app/build/outputs/apk/debug/app-debug.apk"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Frame with the captions
+        run: |
+          fonts="$RUNNER_TEMP/inter" && mkdir -p "$fonts"
+          curl -fsSL -o "$RUNNER_TEMP/inter.zip" "$INTER_URL"
+          echo "$INTER_SHA256  $RUNNER_TEMP/inter.zip" | sha256sum -c - > /dev/null
+          unzip -qjo "$RUNNER_TEMP/inter.zip" extras/otf/InterDisplay-Black.otf extras/otf/Inter-Bold.otf -d "$fonts"
+          cd "$RUNNER_TEMP/trove-source/docs/app-store/screenshots"
+          npm i --no-save --silent "playwright@$PLAYWRIGHT_VERSION" > "$RUNNER_TEMP/private/npm.log" 2>&1
+          npx playwright install --with-deps chromium > "$RUNNER_TEMP/private/playwright.log" 2>&1
+          "$GITHUB_WORKSPACE/tools/store_shots.sh" frame android "$fonts"
+
+      - name: Seal the screenshots
+        id: seal
+        env:
+          TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
+        run: python3 -I tools/renders.py seal android "$RUNNER_TEMP/flows-out/android"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sealed-android
+          path: ${{ runner.temp }}/sealed/android.*
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Fail if a capture or the framing failed
+        run: python3 -I tools/renders.py verdict android
+
+      - name: Remove private source, logs, products and screenshots
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private" "$RUNNER_TEMP/flows-out"
+
+  publish:
+    # Publishes whatever was sealed, even when a device job then failed its verdict.
+    needs: [resolve, ios, android]
+    if: ${{ !cancelled() && (needs.ios.outputs.sealed == 'true' || needs.android.outputs.sealed == 'true') }}
+    runs-on: ubuntu-24.04
+    environment: trove-device-tests
+    timeout-minutes: 20
+    concurrency:
+      group: trove-renders-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Mint the trove-kitchen-renders token
+        id: renders-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_RENDERS_APP_ID }}
+          private-key: ${{ secrets.TROVE_RENDERS_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-renders
+
+      - run: sudo apt-get install -y -qq age > /dev/null
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: sealed-*
+          path: ${{ runner.temp }}/sealed
+          merge-multiple: true
+
+      - name: Publish to trove-renders
+        env:
+          TROVE_RENDERS_AGE_RECIPIENT: ${{ vars.TROVE_RENDERS_AGE_RECIPIENT }}
+          TROVE_RENDERS_AGE_KEY: ${{ secrets.TROVE_RENDERS_AGE_KEY }}
+          TROVE_RENDERS_TOKEN: ${{ steps.renders-token.outputs.token }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+        run: python3 -I tools/renders.py publish store-screenshots "$SHA" "$RUNNER_TEMP/sealed"
+
+      - name: Remove decrypted files
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/sealed" "$RUNNER_TEMP/renders-private" "$RUNNER_TEMP/renders-tree" "$RUNNER_TEMP/renders-git"

@@ -10,7 +10,7 @@ never enter trove-renders' git history.
 
   renders.py seal <platform> <output dir>       -> $RUNNER_TEMP/sealed/<platform>.{age,json}
   renders.py verdict <platform>                 exits 1 if a flow failed or none ran
-  renders.py publish <kind> <sha> <sealed dir>  kind: device-tests | web-flows
+  renders.py publish <kind> <sha> <sealed dir>  kind: device-tests | web-flows | store-screenshots
 
 Environment:
   TROVE_RENDERS_AGE_RECIPIENT  age public key (seal, publish)
@@ -212,8 +212,10 @@ def decrypt(sealed: Path, plain_dir: Path) -> bool:
 
 
 def readme(kind: str, sha: str, run_url: str, summaries: list[dict], files: dict[str, list[str]], tag: str) -> str:
+    # Store screenshots seed their account on the device and reach no backend.
+    backend = "none (seeded on the device)" if kind == "store-screenshots" else "trove-staging"
     lines = [f"# {kind} of trove-app `{sha[:12]}`", "",
-             f"Run: {run_url} · Backend: trove-staging", ""]
+             f"Run: {run_url} · Backend: {backend}", ""]
     for s in summaries:
         p = s["platform"]
         passed = sum(f["result"] == "passed" for f in s["flows"])
@@ -264,7 +266,7 @@ def git(args: list[str], cwd: Path, auth: str, check: bool = True) -> int:
 
 
 def publish(kind: str, sha: str, sealed_dir: str) -> None:
-    if kind not in ("device-tests", "web-flows") or not SHA.fullmatch(sha):
+    if kind not in ("device-tests", "web-flows", "store-screenshots") or not SHA.fullmatch(sha):
         sys.exit(__doc__)
     token = os.environ.pop("TROVE_RENDERS_TOKEN", "")
     if not token:
