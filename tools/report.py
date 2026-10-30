@@ -7,7 +7,9 @@ go only to the trove-app pull request.
 
   report.py xcode  <build.log> <out.md>        compiler errors from xcodebuild/swift
   report.py junit  <results dir> <out.md>      failing tests from JUnit XML
-  report.py post   <title> <out.md> <pr> <sha> comment on Trove-Kitchen/trove-app#<pr>
+  report.py post   <title> <out.md> <pr> <sha> [verdict]
+                                               comment on Trove-Kitchen/trove-app#<pr>; the verdict
+                                               is "failed" when out.md has any text, unless given
 """
 
 import json
@@ -57,7 +59,7 @@ def junit(results: str, out: str) -> int:
     return failed
 
 
-def post(title: str, out: str, pr: str, sha: str) -> None:
+def post(title: str, out: str, pr: str, sha: str, verdict: str = "") -> None:
     token = os.environ.get("TROVE_PR_COMMENT_TOKEN", "")
     if not pr or not token:
         print("No pull request or comment token; details stay on the runner.")
@@ -66,7 +68,8 @@ def post(title: str, out: str, pr: str, sha: str) -> None:
         sys.exit("pull request must be a number and sha a 40-character commit")
     details = Path(out).read_text(encoding="utf-8").strip()
     run = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
-    verdict = "failed" if details else "passed"
+    # A report that always has content (the import check's table) passes its own verdict.
+    verdict = verdict or ("failed" if details else "passed")
     body = f"**{title} {verdict}** at `{sha[:12]}` ([run]({run}))\n\n{details}\n\n---\n_Posted by trove-releases_"
     req = urllib.request.Request(
         f"https://api.github.com/repos/Trove-Kitchen/trove-app/issues/{pr}/comments",

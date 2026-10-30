@@ -1,0 +1,172 @@
+name: Trove import check
+
+# Runs the video links in trove-app's scripts/import-check/links.json through the
+# STAGING video service, the way the phones import them, and reports per link:
+# whether the clip downloaded, what the service makes of it on its own (caption +
+# clip), and, with `listen`, what it makes of a good transcript (Whisper on this
+# runner). Links with expectations (minimum ingredients and steps) are graded on
+# the service result.
+#
+# It tests whatever the staging resolver is running, not the trove-app ref: the
+# ref only picks the script and the link list. To check a resolver change, deploy
+# it to staging first.
+#
+# This repository is public: the log shows link ids and pass/fail counts only.
+# Links, captions and steps go to the trove-app pull request (pr_number).
+#
+# Environment trove-device-tests (no reviewer): TROVE_TEST_EMAIL, TROVE_TEST_PASSWORD,
+# SUPABASE_URL, SUPABASE_ANON_KEY and RESOLVER_BASE_URL, all staging
+# (tools/require_staging.sh refuses anything else).
+
+run-name: 'Trove import check${{ inputs.pr_number && format('' (trove-app #{0})'', inputs.pr_number) || '''' }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: trove-app branch, tag or full commit for the script and link list (never shown in the run name or log)
+        required: true
+        default: main
+        type: string
+      pr_number:
+        description: trove-app pull request to post the report on (optional)
+        required: false
+        type: string
+      listen:
+        description: also transcribe each clip on the runner and extract with that speech
+        required: false
+        default: true
+        type: boolean
+  pull_request:
+    paths:
+      - .github/workflows/import-check.yml
+
+concurrency:
+  # One run at a time against the staging resolver.
+  group: trove-import-check
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    environment: trove-device-tests
+    timeout-minutes: 45
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      RESOLVER_BASE_URL: ${{ secrets.RESOLVER_BASE_URL }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Require staging
+        env:
+          TROVE_TEST_EMAIL: ${{ secrets.TROVE_TEST_EMAIL }}
+          TROVE_TEST_PASSWORD: ${{ secrets.TROVE_TEST_PASSWORD }}
+        run: tools/require_staging.sh
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-contents: read
+
+      # trove-app branch names are private: resolve the ref to its commit without printing it.
+      - name: Resolve the commit to check, printing no branch name
+        id: commit
+        env:
+          TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          ref="$(jq -r '.inputs.ref // "main"' "$GITHUB_EVENT_PATH")"
+          if printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+            sha="$ref"
+          else
+            printf '%s' "$ref" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or full commit"; exit 1; }
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+            echo "::add-mask::$auth"
+            sha="$(git -c http.extraheader="$auth" ls-remote https://github.com/Trove-Kitchen/trove-app.git \
+              "refs/heads/$ref" "refs/tags/$ref" | awk 'NR == 1 { print $1 }')"
+            [ -n "$sha" ] || { echo "ref is not a trove-app branch, tag or full commit"; exit 1; }
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ steps.commit.outputs.sha }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Install the listener
+        if: inputs.listen || github.event_name == 'pull_request'
+        run: |
+          sudo apt-get update -qq > /dev/null && sudo apt-get install -y -qq ffmpeg > /dev/null
+          # The runner's Python 3.12, in a virtual environment (the system one is externally managed).
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q faster-whisper==1.2.1 > /dev/null
+          echo "listener installed"
+
+      - name: Run the links through staging
+        id: check
+        env:
+          TROVE_TEST_EMAIL: ${{ secrets.TROVE_TEST_EMAIL }}
+          TROVE_TEST_PASSWORD: ${{ secrets.TROVE_TEST_PASSWORD }}
+          LISTEN: ${{ (inputs.listen || github.event_name == 'pull_request') && '--listen' || '' }}
+        run: |
+          private="$RUNNER_TEMP/private"
+          mkdir -p "$private"
+          script="$RUNNER_TEMP/trove-source/scripts/import-check/check.py"
+          if [ ! -f "$script" ]; then
+            echo "This trove-app commit has no import check yet."
+            echo "- This trove-app commit has no scripts/import-check/check.py." > "$private/report.md"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          # check.py prints link ids and pass marks only; the report holds the links and steps.
+          py=python3
+          [ -x "$RUNNER_TEMP/venv/bin/python" ] && py="$RUNNER_TEMP/venv/bin/python"
+          "$py" -I "$script" $LISTEN --report "$private/report.md" 2> "$private/stderr.log"
+          code=$?
+          set -e
+          [ -s "$private/report.md" ] || echo "- The import check stopped before writing a report (exit $code)." > "$private/report.md"
+          echo "ok=$([ $code -eq 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Mint a token that can only comment on the trove-app pull request
+        id: comment-token
+        if: always() && steps.check.outcome == 'success' && inputs.pr_number != ''
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-pull-requests: write
+
+      - name: Post the report on the trove-app pull request, never in this log
+        if: always() && steps.check.outcome == 'success'
+        env:
+          TROVE_PR_COMMENT_TOKEN: ${{ steps.comment-token.outputs.token }}
+          PR: ${{ inputs.pr_number }}
+          SHA: ${{ steps.source.outputs.sha }}
+          VERDICT: ${{ steps.check.outputs.ok == 'true' && 'passed' || 'failed' }}
+        run: |
+          python3 -I tools/report.py post "Import check" "$RUNNER_TEMP/private/report.md" "$PR" "$SHA" "$VERDICT"
+          # A change to this workflow tests the workflow: it passes once the check ran and wrote its
+          # report, whatever staging makes of the links. Dispatched runs pass only when every graded link does.
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            grep -q '^| ' "$RUNNER_TEMP/private/report.md"
+          else
+            [ "${{ steps.check.outputs.ok }}" = "true" ]
+          fi
+
+      - name: Remove private source and reports
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private"
