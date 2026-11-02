@@ -179,7 +179,9 @@ preview_ios() {
     eval "set -- $labels"
     MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 perl -e 'alarm shift; exec @ARGV' 600 maestro test "$src/flows/preview/preview.yaml" \
       -e APP_ID="$bundle" "$@" --format junit --output "$dir/report.xml" --test-output-dir "$dir/maestro" \
-      >> "$RUNNER_TEMP/private/maestro-preview.log" 2>&1 && echo "ios: recorded $lang preview" || echo "ios: $lang preview: a beat failed"
+      >> "$RUNNER_TEMP/private/maestro-preview.log" 2>&1 && echo "ios: recorded $lang preview" \
+      || echo "ios: $lang preview: a beat failed ($(grep -oE 'name="Preview [0-9]' "$dir/report.xml" 2>/dev/null | tail -1 | grep -oE '[0-9]$' | sed 's/^/after beat /'))"
+    cp "$RUNNER_TEMP/private/maestro-preview.log" "$dir/maestro.log" 2>/dev/null || true
   done
 }
 
@@ -202,7 +204,7 @@ print(c["captions"][sys.argv[2]][c["frames"].index(sys.argv[3])], end="")
 PY
       ffmpeg -nostdin -y -loglevel error -i "$clip" -an -r 30 -vf "scale=886:-2,crop=886:1920,drawtext=fontfile=$fonts/InterDisplay-Black.otf:textfile=$dest/.caption-$n.txt:fontsize=58:fontcolor=white:box=1:boxcolor=0xE9502F:boxborderw=28:x=(w-text_w)/2:y=h*0.80" \
         -c:v libx264 -pix_fmt yuv420p -profile:v high -preset slow -crf 18 "$dest/.clip-$n.mp4" >> "$log" 2>&1 \
-        || { echo "ios: $lang preview: clip $n didn't encode"; continue 2; }
+        || { echo "ios: $lang preview: clip $n didn't encode ($(grep -oE "No such (filter|file or directory)|Invalid argument|Unknown encoder|not found|Error [a-z ]+" "$log" | tail -1))"; continue 2; }
       echo "file '.clip-$n.mp4'" >> "$list"
     done < <(python3 -I -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["previewBeats"]))' "$src/scripts/localization/store/captions.json")
     (cd "$dest" && ffmpeg -nostdin -y -loglevel error -f concat -safe 0 -i .clips.txt -c copy app-preview.mp4) >> "$log" 2>&1 \
@@ -229,7 +231,8 @@ with open(os.path.join(out, "previews.xml"), "w") as f:
         f.write(f'  <testcase name={quoteattr(name)}>' + ('' if ok else '<failure/>') + '</testcase>\n')
     f.write('</testsuite>\n')
 PY
-  rm -rf "$out/preview-raw"
+  # The raw beats (Maestro's report, screenshots and recordings) stay in the sealed set, so a
+  # failed beat can be read in trove-renders.
 }
 
 case "$cmd" in
