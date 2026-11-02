@@ -102,6 +102,53 @@ def screens(listing: str, out: str) -> int:
     return len(by_name)
 
 
+LANG_NAMES = {"en": "English", "de": "German", "fr": "French", "es": "Spanish (Latin America)", "es-ES": "Spanish (Spain)",
+              "pt-BR": "Portuguese (Brazil)", "pt-PT": "Portuguese (Portugal)"}
+
+
+def gallery(listing: str, out: str) -> int:
+    """Store screenshots by language: the iPhone 6.9-inch frames in a row, the iPad 13-inch frames,
+    the header and search images, and a link to the app preview. Images from the private trove-renders."""
+    data = json.loads(Path(listing).read_text(encoding="utf-8"))
+    commit = str(data.get("commit", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        Path(out).write_text("", encoding="utf-8")
+        return 0
+    base = f"https://github.com/Trove-Kitchen/trove-renders/blob/{commit}/"
+    url = lambda path: base + urllib.parse.quote(path) + "?raw=true"
+    langs: dict[str, dict[str, list[str]]] = {}
+    for shot in data.get("shots", []):
+        path = str(shot.get("path", ""))
+        if not re.fullmatch(r"[A-Za-z0-9 ._/()-]+\.(png|mp4)", path):
+            continue
+        m = re.search(r"/ios/(store|preview)/(?:(ios-69|ipad|covers)/)?(?:([a-z]{2}(?:-[A-Z]{2})?)/)?[^/]+$", path)
+        if not m:
+            continue
+        kind, target, lang = m.group(1), m.group(2) or ("preview" if m.group(1) == "preview" else "ios"), m.group(3) or "en"
+        if kind == "preview":
+            lang = m.group(3) or Path(path).parent.name
+        langs.setdefault(lang, {}).setdefault(target, []).append(path)
+    if not langs:
+        Path(out).write_text("", encoding="utf-8")
+        return 0
+    order = [l for l in LANG_NAMES if l in langs] + sorted(l for l in langs if l not in LANG_NAMES)
+    lines = []
+    for lang in order:
+        t = langs[lang]
+        lines.append(f"### {LANG_NAMES.get(lang, lang)} (`{lang}`)")
+        for target, label, width in (("ios-69", "iPhone 6.9″ (1320×2868)", 96), ("ipad", "iPad 13″ (2064×2752)", 120), ("covers", "Header and search", 220)):
+            paths = sorted(t.get(target, []), key=lambda p: Path(p).name)
+            paths = [p for p in paths if "sheet" not in Path(p).name]
+            if paths:
+                lines.append(f"**{label}**\n\n" + " ".join(f'<a href="{url(p)}"><img src="{url(p)}" width="{width}"></a>' for p in paths))
+        for p in t.get("preview", []):
+            lines.append(f"**App preview:** [{Path(p).name}]({url(p)})")
+        lines.append("")
+    Path(out).write_text("\n\n".join(lines).strip() + "\n", encoding="utf-8")
+    print(f"{len(order)} language(s)")
+    return len(order)
+
+
 def post(title: str, out: str, pr: str, sha: str, verdict: str = "") -> None:
     token = os.environ.get("TROVE_PR_COMMENT_TOKEN", "")
     if not pr or not token:
@@ -132,6 +179,8 @@ if __name__ == "__main__":
         junit(*args)
     elif cmd == "screens":
         screens(*args)
+    elif cmd == "gallery":
+        gallery(*args)
     elif cmd == "post":
         post(*args)
     else:
