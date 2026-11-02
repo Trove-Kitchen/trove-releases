@@ -202,7 +202,11 @@ import json, sys
 c = json.load(open(sys.argv[1]))
 print(c["captions"][sys.argv[2]][c["frames"].index(sys.argv[3])], end="")
 PY
-      ffmpeg -nostdin -y -loglevel error -i "$clip" -an -r 30 -vf "scale=886:-2,crop=886:1920,drawtext=fontfile=$fonts/InterDisplay-Black.otf:textfile=$dest/.caption-$n.txt:fontsize=58:fontcolor=white:box=1:boxcolor=0xE9502F:boxborderw=28:x=(w-text_w)/2:y=h*0.80" \
+      cp "$GITHUB_WORKSPACE/tools/caption_png.mjs" "$shots/.caption.mjs"
+      (cd "$shots" && node .caption.mjs "$dest/.caption-$n.txt" "$fonts" "$dest/.caption-$n.png") >> "$log" 2>&1 \
+        || { echo "ios: $lang preview: caption $n didn't render"; continue 2; }
+      ffmpeg -nostdin -y -loglevel error -i "$clip" -i "$dest/.caption-$n.png" -an -r 30 \
+        -filter_complex "[0:v]scale=886:-2,crop=886:1920[v];[v][1:v]overlay=(W-w)/2:H*0.78" \
         -c:v libx264 -pix_fmt yuv420p -profile:v high -preset slow -crf 18 "$dest/.clip-$n.mp4" >> "$log" 2>&1 \
         || { echo "ios: $lang preview: clip $n didn't encode ($(grep -oE "No such (filter|file or directory)|Invalid argument|Unknown encoder|not found|Error [a-z ]+" "$log" | tail -1))"; continue 2; }
       echo "file '.clip-$n.mp4'" >> "$list"
@@ -210,7 +214,7 @@ PY
     (cd "$dest" && ffmpeg -nostdin -y -loglevel error -f concat -safe 0 -i .clips.txt -c copy app-preview.mp4) >> "$log" 2>&1 \
       && echo "ios: $lang preview: $(ffprobe -v error -show_entries format=duration -of csv=p=0 "$dest/app-preview.mp4" | cut -d. -f1)s" \
       || echo "ios: $lang preview: join failed"
-    rm -f "$dest"/.clip-*.mp4 "$dest"/.caption-*.txt "$list"
+    rm -f "$dest"/.clip-*.mp4 "$dest"/.caption-*.txt "$dest"/.caption-*.png "$list" "$shots/.caption.mjs"
   done
   # junit: one case per language, a preview of 15 to 30 seconds.
   python3 -I - "$out" $LANGS <<'PY'
