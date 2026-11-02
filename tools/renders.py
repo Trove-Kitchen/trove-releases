@@ -346,6 +346,13 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
     else:
         sys.exit("Could not push to trove-renders after 4 tries.")
     print(f"Committed {kind}/{folder} ({sum(len(v) for v in files.values())} files).")
+    # For the trove-app pull request comment (report.py screens): this run's screenshots, by the
+    # trove-renders commit that holds them. Paths only; the images stay in the private repository.
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work, capture_output=True, text=True).stdout.strip()
+    shots = [{"platform": p, "path": f"{kind}/{folder}/{rel}"}
+             for p, rels in files.items() for rel in rels
+             if rel.lower().endswith(".png") and "/takeScreenshot/" in rel]
+    (temp() / "renders-screens.json").write_text(json.dumps({"commit": commit, "shots": shots}))
 
     # Recordings: the sealed archives, still encrypted, as release assets.
     gh = "https://api.github.com"
