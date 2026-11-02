@@ -5,6 +5,8 @@
 # which seeds TheMealDB recipes on the device and reaches no backend.
 #   store_shots.sh capture <ios|android> <app file> [ipad]   (ipad: an iPad simulator is booted)
 #   store_shots.sh frame <ios|android> <Inter fonts dir>
+#   store_shots.sh preview ios <app file>          (records flows/preview/, Maestro on PATH)
+#   store_shots.sh compose ios <Inter fonts dir>   (captions and joins them, ffmpeg on PATH)
 # Output: $RUNNER_TEMP/flows-out/<platform>/{captures,store,proof}/*.png and
 # store-shots.xml (one junit case per capture, and one for the framed set),
 # which renders.py seals. Prints frame names and verdicts only. Always exits 0.
@@ -158,9 +160,83 @@ with open(os.path.join(out, "store-shots.xml"), "w") as f:
 PY
 }
 
+# App previews: trove-app's flows/preview/ drive the store-shot account (Review Recipe
+# open, as frame "import") in each language; Maestro records each beat as its own clip.
+preview_ios() {
+  local app="$1" bundle=ade-studios.Munch-RKCK lang
+  for lang in $LANGS; do
+    local dir="$out/preview-raw/$lang" labels
+    mkdir -p "$dir"
+    [ -f "$src/flows/preview/preview.yaml" ] || { echo "ios: this trove-app has no flows/preview"; return; }
+    labels="$(python3 -I "$src/scripts/localization/preview_labels.py" "$lang")" || { echo "ios: $lang: no preview labels"; continue; }
+    xcrun simctl terminate booted "$bundle" >> "$log" 2>&1 || true
+    xcrun simctl uninstall booted "$bundle" >> "$log" 2>&1 || true
+    xcrun simctl install booted "$app" >> "$log" 2>&1 || { echo "ios: install failed"; return; }
+    SIMCTL_CHILD_MUNCH_DISABLE_CLOUDKIT=1 SIMCTL_CHILD_MUNCH_STORE_SHOTS=import SIMCTL_CHILD_MUNCH_START_TAB=recipes \
+      xcrun simctl launch booted "$bundle" MUNCH_SKIP_ONBOARDING -AppleLanguages "($lang)" -AppleLocale "$(locale_for "$lang")" \
+      >> "$log" 2>&1 || { echo "ios: $lang preview: launch failed"; continue; }
+    sleep "$WAIT"
+    eval "set -- $labels"
+    MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 perl -e 'alarm shift; exec @ARGV' 600 maestro test "$src/flows/preview/preview.yaml" \
+      -e APP_ID="$bundle" "$@" --format junit --output "$dir/report.xml" --test-output-dir "$dir/maestro" \
+      >> "$RUNNER_TEMP/private/maestro-preview.log" 2>&1 && echo "ios: recorded $lang preview" || echo "ios: $lang preview: a beat failed"
+  done
+}
+
+# Each clip scaled to Apple's 886x1920 portrait at 30 fps, captioned with its beat's line
+# from captions.json (previewBeats), then joined: preview/<lang>/app-preview.mp4.
+compose_ios() {
+  local fonts="$1" lang
+  for lang in $LANGS; do
+    local dir="$out/preview-raw/$lang" dest="$out/preview/$lang" n=0 list
+    [ -d "$dir/maestro" ] || continue
+    mkdir -p "$dest"; list="$dest/.clips.txt"; : > "$list"
+    while IFS= read -r beat; do
+      n=$((n + 1))
+      local clip; clip="$(find "$dir/maestro" -name "preview-$n-*.mp4" | head -1)"
+      [ -n "$clip" ] || { echo "ios: $lang preview: no clip $n"; continue 2; }
+      python3 -I - "$src/scripts/localization/store/captions.json" "$lang" "$beat" > "$dest/.caption-$n.txt" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+print(c["captions"][sys.argv[2]][c["frames"].index(sys.argv[3])], end="")
+PY
+      ffmpeg -nostdin -y -loglevel error -i "$clip" -an -r 30 -vf "scale=886:-2,crop=886:1920,drawtext=fontfile=$fonts/InterDisplay-Black.otf:textfile=$dest/.caption-$n.txt:fontsize=58:fontcolor=white:box=1:boxcolor=0xE9502F:boxborderw=28:x=(w-text_w)/2:y=h*0.80" \
+        -c:v libx264 -pix_fmt yuv420p -profile:v high -preset slow -crf 18 "$dest/.clip-$n.mp4" >> "$log" 2>&1 \
+        || { echo "ios: $lang preview: clip $n didn't encode"; continue 2; }
+      echo "file '.clip-$n.mp4'" >> "$list"
+    done < <(python3 -I -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["previewBeats"]))' "$src/scripts/localization/store/captions.json")
+    (cd "$dest" && ffmpeg -nostdin -y -loglevel error -f concat -safe 0 -i .clips.txt -c copy app-preview.mp4) >> "$log" 2>&1 \
+      && echo "ios: $lang preview: $(ffprobe -v error -show_entries format=duration -of csv=p=0 "$dest/app-preview.mp4" | cut -d. -f1)s" \
+      || echo "ios: $lang preview: join failed"
+    rm -f "$dest"/.clip-*.mp4 "$dest"/.caption-*.txt "$list"
+  done
+  # junit: one case per language, a preview of 15 to 30 seconds.
+  python3 -I - "$out" $LANGS <<'PY'
+import os, subprocess, sys
+from xml.sax.saxutils import quoteattr
+out, langs = sys.argv[1], sys.argv[2:]
+cases = []
+for lang in langs:
+    path = os.path.join(out, "preview", lang, "app-preview.mp4")
+    ok = False
+    if os.path.isfile(path):
+        d = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path], capture_output=True, text=True).stdout
+        ok = 15 <= float(d or 0) <= 30
+    cases.append((f"app preview {lang}", ok))
+with open(os.path.join(out, "previews.xml"), "w") as f:
+    f.write(f'<testsuite name="app previews" tests="{len(cases)}">\n')
+    for name, ok in cases:
+        f.write(f'  <testcase name={quoteattr(name)}>' + ('' if ok else '<failure/>') + '</testcase>\n')
+    f.write('</testsuite>\n')
+PY
+  rm -rf "$out/preview-raw"
+}
+
 case "$cmd" in
   capture) if [ "$platform" = ios ]; then capture_ios "$3" "${4:-}"; else capture_android "$3"; fi ;;
   frame) frame_set "$3" ;;
+  preview) preview_ios "$3" ;;
+  compose) compose_ios "$3" ;;
   *) echo "usage: store_shots.sh capture|frame ios|android <file>"; exit 0 ;;
 esac
 exit 0

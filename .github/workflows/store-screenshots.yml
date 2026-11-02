@@ -10,6 +10,8 @@ name: Trove store screenshots
 # with two lines Stocked, a full Discover, and the Import sheet with a link read.
 # The builds carry no Supabase config, so nothing reaches staging or production;
 # Android's resolver points at a .invalid host for the same reason.
+# On iPhone, trove-app's flows/preview/ also record the App Store app preview in
+# each language (Maestro), captioned and joined with ffmpeg at 886x1920.
 # Then trove-app's docs/app-store/screenshots/build.mjs frames them with the
 # captions in frames.json, plus a stamped proof set with a contact sheet.
 #
@@ -104,7 +106,7 @@ jobs:
     if: inputs.platforms != 'android'
     runs-on: macos-26
     environment: trove-device-tests
-    timeout-minutes: 75
+    timeout-minutes: 180
     outputs:
       sealed: ${{ steps.seal.outputs.sealed }}
     steps:
@@ -166,6 +168,30 @@ jobs:
           STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" tools/store_shots.sh capture ios "$app"
           xcrun simctl delete "$udid"
 
+      - name: Install Maestro and ffmpeg
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/maestro.zip" https://github.com/mobile-dev-inc/maestro/releases/download/cli-2.10.0/maestro.zip
+          unzip -q "$RUNNER_TEMP/maestro.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/maestro/bin" >> "$GITHUB_PATH"
+          brew install ffmpeg > /dev/null 2>&1 || brew install ffmpeg
+          ffmpeg -version | head -1
+
+      - name: Record the app previews on an iPhone 6.9-inch simulator
+        run: |
+          app="$(find "$RUNNER_TEMP/derived/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -1)"
+          udid=""
+          for device in "iPhone 17 Pro Max" "iPhone 16 Pro Max" "iPhone 16 Plus"; do
+            udid="$(xcrun simctl create trove-preview "$device" 2>/dev/null)" && break
+          done
+          [ -n "$udid" ] || { echo "No 6.9-inch iPhone simulator on this runner"; exit 1; }
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b > /dev/null
+          xcrun simctl ui "$udid" appearance light
+          xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
+            --cellularMode active --cellularBars 4 --operatorName '' --batteryState charged --batteryLevel 100
+          STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" tools/store_shots.sh preview ios "$app"
+          xcrun simctl delete "$udid"
+
       - name: Capture on an iPad 13-inch simulator
         run: |
           app="$(find "$RUNNER_TEMP/derived/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -1)"
@@ -196,6 +222,7 @@ jobs:
           npm i --no-save --silent "playwright@$PLAYWRIGHT_VERSION" > "$RUNNER_TEMP/private/npm.log" 2>&1
           npx playwright install chromium > "$RUNNER_TEMP/private/playwright.log" 2>&1
           STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" "$GITHUB_WORKSPACE/tools/store_shots.sh" frame ios "$fonts"
+          STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" "$GITHUB_WORKSPACE/tools/store_shots.sh" compose ios "$fonts"
 
       - name: Seal the screenshots
         id: seal
