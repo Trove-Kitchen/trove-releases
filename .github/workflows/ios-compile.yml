@@ -89,8 +89,14 @@ jobs:
           token: ${{ steps.source-token.outputs.token }}
           with_commerce: 'true'
 
-      - name: Show the Xcode on this Mac
-        run: xcodebuild -version
+      # The newest Xcode 26 on the runner, as TestFlight builds use (ios-testflight.yml):
+      # an older SDK runs the app in iOS 26's compatibility look, with no Liquid Glass.
+      - name: Use Xcode 26
+        run: |
+          xc="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$xc" ] || { echo "No Xcode 26 on this runner"; exit 1; }
+          sudo xcode-select -s "$xc/Contents/Developer"
+          xcodebuild -version
 
       - name: Compile for the simulator without signing
         id: build
