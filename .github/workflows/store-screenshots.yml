@@ -37,7 +37,7 @@ on:
         options: [both, ios, android]
         default: both
       languages:
-        description: iPhone languages, space separated (en, de, es, es-ES, fr, pt-BR, pt-PT). Only English is framed for now.
+        description: iPhone languages, space separated (en, de, es, es-ES, fr, pt-BR, pt-PT). Each is framed with its captions (needs a trove-app with the localized set).
         required: false
         default: en
         type: string

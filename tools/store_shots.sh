@@ -26,12 +26,14 @@ FRAMES=(
   "discover 06-discover.png"
   "guides 07-guides.png"
   "library 08-library.png"
+  "link 09-paste-link.png"
 )
 WAIT=18  # seconds for the seed, Discover's catalog and the photos to land
 
 # Languages to capture on iPhone (STORE_LANGS, space separated, default en). English goes
-# to captures/, any other language to captures/<lang>/ and isn't framed yet (its captions
-# need frames.json per language). Android has no translations yet, so it stays English.
+# to captures/ and store/, any other language to captures/<lang>/ and store/<lang>/, framed
+# with frames.json's localized set (build.mjs --lang). Android has no translations yet,
+# so it stays English.
 LANGS="${STORE_LANGS:-en}"
 [[ "$LANGS" =~ ^[A-Za-z]{2}(-[A-Za-z]{2})?( [A-Za-z]{2}(-[A-Za-z]{2})?)*$ ]] || { echo "STORE_LANGS: language codes like de or pt-BR, space separated"; exit 0; }
 [ "$platform" = android ] && LANGS=en
@@ -104,26 +106,34 @@ capture_android() {
 }
 
 frame_set() {
-  local fonts="$1" status=0 framed=1
-  case " $LANGS " in *" en "*) ;; *) framed=0 ;; esac
-  [ "$framed" = 1 ] && (cd "$shots" && node build.mjs frames.json --target "$platform" --captures "$out/captures" --out "$out/store" --fonts "$fonts") >> "$log" 2>&1 || status=$?
-  [ "$framed" = 1 ] && (cd "$shots" && node build.mjs frames.json --target "$platform" --captures "$out/captures" --out "$out/proof" --fonts "$fonts" --proof) >> "$log" 2>&1 || true
+  local fonts="$1" status=0 lang targets=("$platform") t
+  [ "$platform" = ios ] && targets=(ios ios-69)
+  for lang in $LANGS; do
+    local caps="$out/captures" langflag=() sub=""
+    [ "$lang" = en ] || { caps="$out/captures/$lang"; langflag=(--lang "$lang"); sub="/$lang"; }
+    for t in "${targets[@]}"; do
+      # The 6.9-inch set needs a trove-app with that target; older commits skip it.
+      [ "$t" = ios-69 ] && ! grep -q '"ios-69"' "$shots/frames.json" && continue
+      local o="$out/store/$t$sub"; [ "$t" = "$platform" ] && o="$out/store$sub"
+      (cd "$shots" && node build.mjs frames.json --target "$t" ${langflag[@]+"${langflag[@]}"} --captures "$caps" --out "$o" --fonts "$fonts") >> "$log" 2>&1 || status=$?
+      (cd "$shots" && node build.mjs frames.json --target "$t" ${langflag[@]+"${langflag[@]}"} --captures "$caps" --out "${o/store/proof}" --fonts "$fonts" --proof) >> "$log" 2>&1 || true
+    done
+  done
   # The build's own complaints (frame names and layout notes, no source) are worth seeing here.
   grep -E '^(not built|layout warnings)|^  (ios|android)[/:]' "$log" | sed "s/^/$platform: /" | tail -n 20 || true
   # junit: one case per capture (present and not blank), one for the framed set.
-  python3 -I - "$out" "$platform" "$status" "$framed" $LANGS <<'PY'
+  python3 -I - "$out" "$platform" "$status" $LANGS <<'PY'
 import os, sys
 from xml.sax.saxutils import quoteattr
-out, platform, status, framed, langs = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4] == "1", sys.argv[5:]
+out, platform, status, langs = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4:]
 cases = []
 for lang in langs:
   for name in ["01-save-from-link", "02-recipe-source", "03-cooking-timer", "04-meal-plan-week", "05-grocery-list", "06-discover",
-               "07-guides", "08-library"]:
+               "07-guides", "08-library"] + (["09-paste-link"] if platform == "ios" else []):
     path = os.path.join(out, "captures", *([] if lang == "en" else [lang]), name + ".png")
     ok = os.path.isfile(path) and os.path.getsize(path) > 30_000
     cases.append((f"capture {name}" if lang == "en" else f"capture {lang} {name}", ok))
-if framed:
-    cases.append(("framed set (build.mjs)", status == 0))
+cases.append(("framed sets (build.mjs)", status == 0))
 with open(os.path.join(out, "store-shots.xml"), "w") as f:
     f.write(f'<testsuite name="store screenshots {platform}" tests="{len(cases)}">\n')
     for name, ok in cases:
