@@ -4,7 +4,7 @@
 
 Waits (up to 45 minutes) for Apple to finish processing the build, answers export
 compliance when it's still open (Trove uses only Apple's standard encryption: HTTPS),
-sets "What to Test" (en-US) and adds the build to each named beta group. With no groups,
+sets "What to Test" (whatsNew, en-US) and adds the build to each named beta group. With no groups,
 it lists the app's groups. Prints group names and verdicts only; the key never leaves
 the environment.
 """
@@ -41,7 +41,13 @@ def main() -> None:
     app = apps[0]["id"]
 
     groups = call("GET", f"/v1/apps/{app}/betaGroups", query={"limit": "50"})["data"]
-    print("Beta groups: " + ", ".join(f"{g['attributes']['name']}{' (internal)' if g['attributes'].get('isInternalGroup') else ''}" for g in groups))
+    for g in groups:
+        a = g["attributes"]
+        testers = call("GET", f"/v1/betaGroups/{g['id']}/betaTesters", query={"limit": "200", "fields[betaTesters]": "inviteType"})["data"]
+        kind = "internal" if a.get("isInternalGroup") else "external"
+        auto = ", gets every build" if a.get("hasAccessToAllBuilds") else ""
+        link = ", public link on" if a.get("publicLinkEnabled") else ""
+        print(f"Beta group: {a['name']} ({kind}, {len(testers)} testers{auto}{link})")
     wanted = [n.strip() for n in groups_arg.split(",") if n.strip()]
 
     build = None
@@ -68,9 +74,9 @@ def main() -> None:
         locs = call("GET", f"/v1/builds/{build['id']}/betaBuildLocalizations")["data"]
         en = next((l for l in locs if l["attributes"]["locale"] == "en-US"), None)
         if en:
-            call("PATCH", f"/v1/betaBuildLocalizations/{en['id']}", {"data": {"type": "betaBuildLocalizations", "id": en["id"], "attributes": {"whatToTest": notes}}})
+            call("PATCH", f"/v1/betaBuildLocalizations/{en['id']}", {"data": {"type": "betaBuildLocalizations", "id": en["id"], "attributes": {"whatsNew": notes}}})
         else:
-            call("POST", "/v1/betaBuildLocalizations", {"data": {"type": "betaBuildLocalizations", "attributes": {"locale": "en-US", "whatToTest": notes},
+            call("POST", "/v1/betaBuildLocalizations", {"data": {"type": "betaBuildLocalizations", "attributes": {"locale": "en-US", "whatsNew": notes},
                                                                  "relationships": {"build": {"data": {"type": "builds", "id": build["id"]}}}}})
         print("What to Test: set")
 
