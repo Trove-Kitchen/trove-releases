@@ -7,6 +7,7 @@ go only to the trove-app pull request.
 
   report.py xcode  <build.log> <out.md>        compiler errors from xcodebuild/swift
   report.py junit  <results dir> <out.md>      failing tests from JUnit XML
+  report.py screens <screens.json> <out.md>    a table of a device run's screenshots (renders.py)
   report.py post   <title> <out.md> <pr> <sha> [verdict]
                                                comment on Trove-Kitchen/trove-app#<pr>; the verdict
                                                is "failed" when out.md has any text, unless given
@@ -16,6 +17,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -59,6 +61,47 @@ def junit(results: str, out: str) -> int:
     return failed
 
 
+def screens(listing: str, out: str) -> int:
+    """One row per screenshot name, a column per platform, images from the private trove-renders.
+
+    Only people who can open trove-renders see the images; the paths name flows and screenshots,
+    which the public log already prints.
+    """
+    data = json.loads(Path(listing).read_text(encoding="utf-8"))
+    commit = str(data.get("commit", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        Path(out).write_text("", encoding="utf-8")
+        print("No trove-renders commit; no screenshots to post.")
+        return 0
+    platforms = ["android", "ios", "web"]
+    by_name: dict[str, dict[str, str]] = {}
+    for shot in data.get("shots", []):
+        path, platform = str(shot.get("path", "")), str(shot.get("platform", ""))
+        if platform not in platforms or not re.fullmatch(r"[A-Za-z0-9 ._/()-]+\.png", path):
+            continue
+        name = Path(path).stem
+        by_name.setdefault(name, {})[platform] = path
+    used = [p for p in platforms if any(p in row for row in by_name.values())]
+    if not by_name:
+        Path(out).write_text("", encoding="utf-8")
+        print("No screenshots in this run.")
+        return 0
+    base = f"https://github.com/Trove-Kitchen/trove-renders/blob/{commit}/"
+    labels = {"android": "Android", "ios": "iPhone", "web": "Web"}
+    lines = ["| Screenshot | " + " | ".join(labels[p] for p in used) + " |",
+             "|---|" + "---|" * len(used)]
+    for name in sorted(by_name):
+        cells = []
+        for p in used:
+            path = by_name[name].get(p)
+            url = base + urllib.parse.quote(path) + "?raw=true" if path else ""
+            cells.append(f'<img src="{url}" width="200">' if path else "–")
+        lines.append(f"| `{name}` | " + " | ".join(cells) + " |")
+    Path(out).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"{len(by_name)} screenshot(s)")
+    return len(by_name)
+
+
 def post(title: str, out: str, pr: str, sha: str, verdict: str = "") -> None:
     token = os.environ.get("TROVE_PR_COMMENT_TOKEN", "")
     if not pr or not token:
@@ -87,6 +130,8 @@ if __name__ == "__main__":
         xcode(*args)
     elif cmd == "junit":
         junit(*args)
+    elif cmd == "screens":
+        screens(*args)
     elif cmd == "post":
         post(*args)
     else:

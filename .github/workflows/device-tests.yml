@@ -17,7 +17,7 @@ name: Trove device tests
 # Trove-Kitchen/trove-renders (device-tests/), and attaches the encrypted
 # archives, which hold the recordings, to a trove-renders release.
 
-run-name: 'Trove device tests${{ (!inputs.ref || inputs.ref == ''main'') && '' of main'' || '''' }}'
+run-name: 'Trove device tests${{ inputs.pr_number && format('' of trove-app #{0}'', inputs.pr_number) || (!inputs.ref || inputs.ref == ''main'') && '' of main'' || '''' }}'
 
 on:
   workflow_dispatch:
@@ -33,6 +33,10 @@ on:
         type: choice
         options: [both, android, ios]
         default: both
+      pr_number:
+        description: trove-app pull request to post the screenshots on (optional)
+        required: false
+        type: string
 
 concurrency:
   group: trove-device-tests
@@ -333,6 +337,31 @@ jobs:
           SHA: ${{ needs.resolve.outputs.sha }}
         run: python3 -I tools/renders.py publish device-tests "$SHA" "$RUNNER_TEMP/sealed"
 
+      # The screenshots go to the trove-app pull request as a table of images from the private
+      # trove-renders; only people who can open trove-renders see them. Nothing here is printed.
+      - name: Mint a token that can only comment on the trove-app pull request
+        id: comment-token
+        if: inputs.pr_number != ''
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-pull-requests: write
+
+      - name: Post the screenshots on the trove-app pull request
+        if: inputs.pr_number != ''
+        env:
+          TROVE_PR_COMMENT_TOKEN: ${{ steps.comment-token.outputs.token }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          VERDICT: ${{ (needs.android.result != 'failure' && needs.ios.result != 'failure') && 'passed' || 'failed' }}
+        run: |
+          pr="$(jq -r '.inputs.pr_number // ""' "$GITHUB_EVENT_PATH")"
+          [[ "$pr" =~ ^[0-9]{1,6}$ ]] || { echo "pr_number must be a number"; exit 1; }
+          python3 -I tools/report.py screens "$RUNNER_TEMP/renders-screens.json" "$RUNNER_TEMP/screens.md"
+          python3 -I tools/report.py post "Device tests" "$RUNNER_TEMP/screens.md" "$pr" "$SHA" "$VERDICT"
+
       - name: Remove decrypted files
         if: always()
-        run: rm -rf -- "$RUNNER_TEMP/sealed" "$RUNNER_TEMP/renders-private" "$RUNNER_TEMP/renders-tree" "$RUNNER_TEMP/renders-git"
+        run: rm -rf -- "$RUNNER_TEMP/sealed" "$RUNNER_TEMP/renders-private" "$RUNNER_TEMP/renders-tree" "$RUNNER_TEMP/renders-git" "$RUNNER_TEMP/renders-screens.json" "$RUNNER_TEMP/screens.md"
