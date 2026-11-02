@@ -25,6 +25,9 @@ name: Trove database ops
 # Preview scripts (docs/content/featured-collections/preview-*.sql) print a secret
 # token, so they are refused here and stay with the local lane.
 #
+# mirror-blocked-covers runs the same script with --blocked: it copies photos on other
+# sites whose server tells browsers not to show them elsewhere (goya.es), so the web can.
+#
 # mirror-covers asks the video resolver's POST /preview for a fresh thumbnail when a
 # saved Instagram/TikTok link has expired (Instagram's oEmbed doesn't answer from
 # GitHub's runners). It authenticates with TROVE_RESOLVER_SERVICE_TOKEN, a token the
@@ -47,7 +50,7 @@ on:
         required: true
         default: migration
         type: choice
-        options: [migration, content, mirror-covers]
+        options: [migration, content, mirror-covers, mirror-blocked-covers]
       path:
         description: 'For migration and content: the file, e.g. supabase/migrations/0012_recipe_saves_privacy.sql'
         required: false
@@ -100,8 +103,8 @@ jobs:
                 || { echo "path must be docs/content/featured-collections/<name>.sql"; exit 1; }
               [[ "$(basename "$path")" != preview-* ]] \
                 || { echo "Preview scripts print a secret token; the local lane runs them."; exit 1; } ;;
-            mirror-covers)
-              [ -z "$path" ] || { echo "mirror-covers takes no path"; exit 1; }
+            mirror-covers|mirror-blocked-covers)
+              [ -z "$path" ] || { echo "$task takes no path"; exit 1; }
               [ -z "$after" ] || [[ "$after" =~ ^[A-Za-z0-9_-]{1,200}$ ]] \
                 || { echo "after must be a row id"; exit 1; } ;;
             *) echo "unknown task"; exit 1 ;;
@@ -146,7 +149,7 @@ jobs:
           token: ${{ steps.source-token.outputs.token }}
 
       - name: Run the SQL file
-        if: inputs.task != 'mirror-covers'
+        if: inputs.task != 'mirror-covers' && inputs.task != 'mirror-blocked-covers'
         working-directory: ${{ runner.temp }}/trove-source
         env:
           DB_URL: ${{ secrets.TROVE_DB_URL }}
@@ -176,12 +179,12 @@ jobs:
           fi
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: inputs.task == 'mirror-covers'
+        if: inputs.task == 'mirror-covers' || inputs.task == 'mirror-blocked-covers'
         with:
           node-version: '22'
 
       - name: Repair expiring photos
-        if: inputs.task == 'mirror-covers'
+        if: inputs.task == 'mirror-covers' || inputs.task == 'mirror-blocked-covers'
         working-directory: ${{ runner.temp }}/trove-source/services/enrichment
         env:
           SUPABASE_URL: ${{ secrets.TROVE_SUPABASE_URL }}
@@ -192,10 +195,13 @@ jobs:
           RESOLVER_SERVICE_TOKEN: ${{ secrets.TROVE_RESOLVER_SERVICE_TOKEN }}
           APPLY: ${{ inputs.apply }}
           AFTER: ${{ inputs.after }}
+          TASK: ${{ inputs.task }}
         run: |
           args=()
           [ "$APPLY" = "true" ] && args+=(--apply)
           [ -n "$AFTER" ] && args+=(--after "$AFTER")
+          # Photos on other sites whose server tells browsers not to show them elsewhere.
+          [ "$TASK" = "mirror-blocked-covers" ] && args+=(--blocked)
           log="$RUNNER_TEMP/mirror.log"
           set +e
           node mirror-covers.mjs "${args[@]}" > "$log" 2>&1
@@ -203,7 +209,7 @@ jobs:
           set -e
           # Totals, which resolver credential was used (its name, never its value) and
           # a rejected credential's name. The per-row lines name recipes, so they stay here.
-          grep -E '^Resolver /preview: |expiring photos? to copy|^(Would copy|Copied) |^More may remain|^The resolver rejected RESOLVER_[A-Z_]+ ' "$log" | sed -E 's/^Dry run \(pass --apply to write\)\. //' || true
+          grep -E '^Resolver /preview: |(expiring|blocked) photos? to copy|^(Would copy|Copied) |^More may remain|^The resolver rejected RESOLVER_[A-Z_]+ ' "$log" | sed -E 's/^Dry run \(pass --apply to write\)\. //' || true
           if [ $status -ne 0 ]; then
             echo "mirror-covers exited with status $status."
             grep -ciE 'error|failed' "$log" | sed 's/^/error lines: /' || true
