@@ -36,6 +36,11 @@ on:
         type: choice
         options: [both, ios, android]
         default: both
+      languages:
+        description: iPhone languages, space separated (en, de, es, es-ES, fr, pt-BR, pt-PT). Only English is framed for now.
+        required: false
+        default: en
+        type: string
   pull_request:
     paths:
       - .github/workflows/store-screenshots.yml
@@ -158,7 +163,7 @@ jobs:
           xcrun simctl ui "$udid" appearance light
           xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
             --cellularMode active --cellularBars 4 --operatorName '' --batteryState charged --batteryLevel 100
-          tools/store_shots.sh capture ios "$app"
+          STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" tools/store_shots.sh capture ios "$app"
           xcrun simctl delete "$udid"
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -174,7 +179,7 @@ jobs:
           cd "$RUNNER_TEMP/trove-source/docs/app-store/screenshots"
           npm i --no-save --silent "playwright@$PLAYWRIGHT_VERSION" > "$RUNNER_TEMP/private/npm.log" 2>&1
           npx playwright install chromium > "$RUNNER_TEMP/private/playwright.log" 2>&1
-          "$GITHUB_WORKSPACE/tools/store_shots.sh" frame ios "$fonts"
+          STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" "$GITHUB_WORKSPACE/tools/store_shots.sh" frame ios "$fonts"
 
       - name: Seal the screenshots
         id: seal

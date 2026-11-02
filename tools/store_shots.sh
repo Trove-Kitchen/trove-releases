@@ -29,8 +29,23 @@ FRAMES=(
 )
 WAIT=18  # seconds for the seed, Discover's catalog and the photos to land
 
+# Languages to capture on iPhone (STORE_LANGS, space separated, default en). English goes
+# to captures/, any other language to captures/<lang>/ and isn't framed yet (its captions
+# need frames.json per language). Android has no translations yet, so it stays English.
+LANGS="${STORE_LANGS:-en}"
+[[ "$LANGS" =~ ^[A-Za-z]{2}(-[A-Za-z]{2})?( [A-Za-z]{2}(-[A-Za-z]{2})?)*$ ]] || { echo "STORE_LANGS: language codes like de or pt-BR, space separated"; exit 0; }
+[ "$platform" = android ] && LANGS=en
+locale_for() {
+  case "$1" in
+    en) echo en_US ;; es) echo es_MX ;; *-*) echo "${1%-*}_${1#*-}" ;; *) echo "${1}_$(echo "$1" | tr a-z A-Z)" ;;
+  esac
+}
+
 capture_ios() {
-  local app="$1" bundle=ade-studios.Munch-RKCK
+  local app="$1" bundle=ade-studios.Munch-RKCK lang dir
+  for lang in $LANGS; do
+  dir="$out/captures"; [ "$lang" = en ] || dir="$out/captures/$lang"
+  mkdir -p "$dir"
   for entry in "${FRAMES[@]}"; do
     set -- $entry; local frame="$1" file="$2"
     xcrun simctl terminate booted "$bundle" >> "$log" 2>&1 || true
@@ -40,10 +55,12 @@ capture_ios() {
     case "$frame" in mealPlan|grocery) tab="$frame" ;; library) tab=profile ;; esac
     # The unsigned build has no iCloud entitlement, so CloudKit stays off.
     SIMCTL_CHILD_MUNCH_DISABLE_CLOUDKIT=1 SIMCTL_CHILD_MUNCH_STORE_SHOTS="$frame" SIMCTL_CHILD_MUNCH_START_TAB="$tab" \
-      xcrun simctl launch booted "$bundle" MUNCH_SKIP_ONBOARDING >> "$log" 2>&1 || echo "ios: $frame: launch failed"
+      xcrun simctl launch booted "$bundle" MUNCH_SKIP_ONBOARDING -AppleLanguages "($lang)" -AppleLocale "$(locale_for "$lang")" \
+      >> "$log" 2>&1 || echo "ios: $lang $frame: launch failed"
     sleep "$WAIT"
-    xcrun simctl io booted screenshot "$out/captures/$file" >> "$log" 2>&1 || echo "ios: $frame: screenshot failed"
-    echo "ios: captured $frame"
+    xcrun simctl io booted screenshot "$dir/$file" >> "$log" 2>&1 || echo "ios: $lang $frame: screenshot failed"
+    echo "ios: captured $lang $frame"
+  done
   done
   xcrun simctl spawn booted log show --last 20m --style compact --predicate 'process == "Munch"' > "$RUNNER_TEMP/private/app.log" 2>/dev/null || true
 }
@@ -87,23 +104,26 @@ capture_android() {
 }
 
 frame_set() {
-  local fonts="$1" status=0
-  (cd "$shots" && node build.mjs frames.json --target "$platform" --captures "$out/captures" --out "$out/store" --fonts "$fonts") >> "$log" 2>&1 || status=$?
-  (cd "$shots" && node build.mjs frames.json --target "$platform" --captures "$out/captures" --out "$out/proof" --fonts "$fonts" --proof) >> "$log" 2>&1 || true
+  local fonts="$1" status=0 framed=1
+  case " $LANGS " in *" en "*) ;; *) framed=0 ;; esac
+  [ "$framed" = 1 ] && (cd "$shots" && node build.mjs frames.json --target "$platform" --captures "$out/captures" --out "$out/store" --fonts "$fonts") >> "$log" 2>&1 || status=$?
+  [ "$framed" = 1 ] && (cd "$shots" && node build.mjs frames.json --target "$platform" --captures "$out/captures" --out "$out/proof" --fonts "$fonts" --proof) >> "$log" 2>&1 || true
   # The build's own complaints (frame names and layout notes, no source) are worth seeing here.
   grep -E '^(not built|layout warnings)|^  (ios|android)[/:]' "$log" | sed "s/^/$platform: /" | tail -n 20 || true
   # junit: one case per capture (present and not blank), one for the framed set.
-  python3 -I - "$out" "$platform" "$status" <<'PY'
+  python3 -I - "$out" "$platform" "$status" "$framed" $LANGS <<'PY'
 import os, sys
 from xml.sax.saxutils import quoteattr
-out, platform, status = sys.argv[1], sys.argv[2], int(sys.argv[3])
+out, platform, status, framed, langs = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4] == "1", sys.argv[5:]
 cases = []
-for name in ["01-save-from-link", "02-recipe-source", "03-cooking-timer", "04-meal-plan-week", "05-grocery-list", "06-discover",
-             "07-guides", "08-library"]:
-    path = os.path.join(out, "captures", name + ".png")
+for lang in langs:
+  for name in ["01-save-from-link", "02-recipe-source", "03-cooking-timer", "04-meal-plan-week", "05-grocery-list", "06-discover",
+               "07-guides", "08-library"]:
+    path = os.path.join(out, "captures", *([] if lang == "en" else [lang]), name + ".png")
     ok = os.path.isfile(path) and os.path.getsize(path) > 30_000
-    cases.append((f"capture {name}", ok))
-cases.append(("framed set (build.mjs)", status == 0))
+    cases.append((f"capture {name}" if lang == "en" else f"capture {lang} {name}", ok))
+if framed:
+    cases.append(("framed set (build.mjs)", status == 0))
 with open(os.path.join(out, "store-shots.xml"), "w") as f:
     f.write(f'<testsuite name="store screenshots {platform}" tests="{len(cases)}">\n')
     for name, ok in cases:
