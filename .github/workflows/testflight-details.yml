@@ -1,0 +1,48 @@
+name: Trove TestFlight details
+
+# For a build already uploaded by Trove iOS (ios-testflight.yml): waits for Apple's
+# processing, answers export compliance if it's open, sets "What to Test" and adds the
+# build to TestFlight groups. Run with no groups to list them. Uses the same App Store
+# Connect key as the upload (environment trove-ios). Prints group names and verdicts only.
+
+run-name: 'TestFlight details for build ${{ inputs.build_number }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: The build's CFBundleVersion (as uploaded)
+        required: true
+        type: string
+      what_to_test:
+        description: What to Test (English), shown to testers in TestFlight
+        required: false
+        type: string
+      groups:
+        description: TestFlight groups to add it to, comma separated (empty lists them)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  details:
+    runs-on: ubuntu-24.04
+    environment: trove-ios
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: python3 -m venv "$RUNNER_TEMP/venv" && "$RUNNER_TEMP/venv/bin/pip" install --quiet 'pyjwt[crypto]==2.10.1'
+      - name: Set What to Test and groups
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+        run: |
+          [[ "$(jq -r '.inputs.build_number' "$GITHUB_EVENT_PATH")" =~ ^[0-9]{1,6}$ ]] || { echo "build_number must be a number"; exit 1; }
+          jq -r '.inputs.what_to_test // ""' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/notes.txt"
+          "$RUNNER_TEMP/venv/bin/python" -I tools/testflight.py ade-studios.Munch-RKCK "$(jq -r '.inputs.build_number' "$GITHUB_EVENT_PATH")" \
+            "$RUNNER_TEMP/notes.txt" "$(jq -r '.inputs.groups // ""' "$GITHUB_EVENT_PATH")"
