@@ -123,6 +123,16 @@ frame_set() {
       (cd "$shots" && node build.mjs frames.json --target "$t" ${langflag[@]+"${langflag[@]}"} --captures "$caps" --out "${o/store/proof}" --fonts "$fonts" --proof) >> "$log" 2>&1 || true
     done
   done
+  # The App Store header and search images (iOS 27+), per language, from the iPhone captures.
+  if [ "$platform" = ios ] && grep -q -- "--lang" "$shots/covers.mjs"; then
+    for lang in $LANGS; do
+      local caps="$out/captures" langflag=() o="$out/store/covers"
+      [ "$lang" = en ] || { caps="$caps/$lang"; langflag=(--lang "$lang"); o="$o/$lang"; }
+      for a in header search universal; do
+        (cd "$shots" && node covers.mjs frames.json --only "$a" ${langflag[@]+"${langflag[@]}"} --captures "$caps" --out "$o" --fonts "$fonts") >> "$log" 2>&1 || status=$?
+      done
+    done
+  fi
   # The build's own complaints (frame names and layout notes, no source) are worth seeing here.
   grep -E '^(not built|layout warnings)|^  (ios|android)[/:]' "$log" | sed "s/^/$platform: /" | tail -n 20 || true
   # junit: one case per capture (present and not blank), one for the framed set.
