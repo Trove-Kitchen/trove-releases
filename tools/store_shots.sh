@@ -3,7 +3,7 @@
 # emulator. Each frame starts from a fresh install with the DEBUG store-screenshot
 # account (trove-app: Munch/StoreScreenshots.swift, android .../StoreShots.kt),
 # which seeds TheMealDB recipes on the device and reaches no backend.
-#   store_shots.sh capture <ios|android> <app file>
+#   store_shots.sh capture <ios|android> <app file> [ipad]   (ipad: an iPad simulator is booted)
 #   store_shots.sh frame <ios|android> <Inter fonts dir>
 # Output: $RUNNER_TEMP/flows-out/<platform>/{captures,store,proof}/*.png and
 # store-shots.xml (one junit case per capture, and one for the framed set),
@@ -44,9 +44,10 @@ locale_for() {
 }
 
 capture_ios() {
-  local app="$1" bundle=ade-studios.Munch-RKCK lang dir
+  local app="$1" device="${2:-}" bundle=ade-studios.Munch-RKCK lang dir root="$out/captures"
+  [ "$device" = ipad ] && root="$out/captures-ipad"
   for lang in $LANGS; do
-  dir="$out/captures"; [ "$lang" = en ] || dir="$out/captures/$lang"
+  dir="$root"; [ "$lang" = en ] || dir="$root/$lang"
   mkdir -p "$dir"
   for entry in "${FRAMES[@]}"; do
     set -- $entry; local frame="$1" file="$2"
@@ -61,7 +62,7 @@ capture_ios() {
       >> "$log" 2>&1 || echo "ios: $lang $frame: launch failed"
     sleep "$WAIT"
     xcrun simctl io booted screenshot "$dir/$file" >> "$log" 2>&1 || echo "ios: $lang $frame: screenshot failed"
-    echo "ios: captured $lang $frame"
+    echo "ios: captured ${device:+$device }$lang $frame"
   done
   done
   xcrun simctl spawn booted log show --last 20m --style compact --predicate 'process == "Munch"' > "$RUNNER_TEMP/private/app.log" 2>/dev/null || true
@@ -107,13 +108,16 @@ capture_android() {
 
 frame_set() {
   local fonts="$1" status=0 lang targets=("$platform") t
-  [ "$platform" = ios ] && targets=(ios ios-69)
+  [ "$platform" = ios ] && targets=(ios ios-69 ipad)
   for lang in $LANGS; do
-    local caps="$out/captures" langflag=() sub=""
-    [ "$lang" = en ] || { caps="$out/captures/$lang"; langflag=(--lang "$lang"); sub="/$lang"; }
+    local langflag=() sub=""
+    [ "$lang" = en ] || { langflag=(--lang "$lang"); sub="/$lang"; }
     for t in "${targets[@]}"; do
-      # The 6.9-inch set needs a trove-app with that target; older commits skip it.
-      [ "$t" = ios-69 ] && ! grep -q '"ios-69"' "$shots/frames.json" && continue
+      # The 6.9-inch and iPad sets need a trove-app with those targets; older commits skip them.
+      [ "$t" != "$platform" ] && ! grep -q "\"$t\"" "$shots/frames.json" && continue
+      local caps="$out/captures"; [ "$t" = ipad ] && caps="$out/captures-ipad"
+      [ "$t" = ipad ] && [ ! -d "$caps" ] && continue
+      caps="$caps$sub"
       local o="$out/store/$t$sub"; [ "$t" = "$platform" ] && o="$out/store$sub"
       (cd "$shots" && node build.mjs frames.json --target "$t" ${langflag[@]+"${langflag[@]}"} --captures "$caps" --out "$o" --fonts "$fonts") >> "$log" 2>&1 || status=$?
       (cd "$shots" && node build.mjs frames.json --target "$t" ${langflag[@]+"${langflag[@]}"} --captures "$caps" --out "${o/store/proof}" --fonts "$fonts" --proof) >> "$log" 2>&1 || true
@@ -127,12 +131,14 @@ import os, sys
 from xml.sax.saxutils import quoteattr
 out, platform, status, langs = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4:]
 cases = []
-for lang in langs:
+roots = [("captures", "")] + ([("captures-ipad", "ipad ")] if os.path.isdir(os.path.join(out, "captures-ipad")) else [])
+for root, label in roots:
+ for lang in langs:
   for name in ["01-save-from-link", "02-recipe-source", "03-cooking-timer", "04-meal-plan-week", "05-grocery-list", "06-discover",
                "07-guides", "08-library"] + (["09-paste-link"] if platform == "ios" else []):
-    path = os.path.join(out, "captures", *([] if lang == "en" else [lang]), name + ".png")
+    path = os.path.join(out, root, *([] if lang == "en" else [lang]), name + ".png")
     ok = os.path.isfile(path) and os.path.getsize(path) > 30_000
-    cases.append((f"capture {name}" if lang == "en" else f"capture {lang} {name}", ok))
+    cases.append((f"capture {label}{name}" if lang == "en" else f"capture {label}{lang} {name}", ok))
 cases.append(("framed sets (build.mjs)", status == 0))
 with open(os.path.join(out, "store-shots.xml"), "w") as f:
     f.write(f'<testsuite name="store screenshots {platform}" tests="{len(cases)}">\n')
@@ -143,7 +149,7 @@ PY
 }
 
 case "$cmd" in
-  capture) if [ "$platform" = ios ]; then capture_ios "$3"; else capture_android "$3"; fi ;;
+  capture) if [ "$platform" = ios ]; then capture_ios "$3" "${4:-}"; else capture_android "$3"; fi ;;
   frame) frame_set "$3" ;;
   *) echo "usage: store_shots.sh capture|frame ios|android <file>"; exit 0 ;;
 esac

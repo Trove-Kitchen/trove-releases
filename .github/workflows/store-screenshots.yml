@@ -1,7 +1,7 @@
 name: Trove store screenshots
 
 # trove-app's App Store and Google Play screenshots, from the real app:
-#   - iOS: an iPhone 6.9-inch simulator (1320x2868), status bar at 9:41 and full battery
+#   - iOS: an iPhone 6.9-inch simulator (1320x2868) and an iPad 13-inch (2064x2752), status bar at 9:41 and full battery
 #   - Android: a Pixel 7 emulator (1080x2400), the same status bar through demo mode;
 #     build.mjs frames it on a 1080x2160 (1:2) Play canvas
 # Each frame launches a fresh DEBUG install with the store-screenshot account
@@ -164,6 +164,22 @@ jobs:
           xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
             --cellularMode active --cellularBars 4 --operatorName '' --batteryState charged --batteryLevel 100
           STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" tools/store_shots.sh capture ios "$app"
+          xcrun simctl delete "$udid"
+
+      - name: Capture on an iPad 13-inch simulator
+        run: |
+          app="$(find "$RUNNER_TEMP/derived/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -1)"
+          udid=""
+          for device in "iPad Pro 13-inch (M5)" "iPad Pro 13-inch (M4)" "iPad Air 13-inch (M3)" "iPad Air 13-inch (M2)"; do
+            udid="$(xcrun simctl create trove-store-ipad "$device" 2>/dev/null)" && { echo "simulator: $device"; break; }
+          done
+          [ -n "$udid" ] || { echo "No 13-inch iPad simulator on this runner"; exit 1; }
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b > /dev/null
+          xcrun simctl ui "$udid" appearance light
+          xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
+            --batteryState charged --batteryLevel 100
+          STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" tools/store_shots.sh capture ios "$app" ipad
           xcrun simctl delete "$udid"
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
