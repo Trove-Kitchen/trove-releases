@@ -271,6 +271,21 @@ jobs:
           print("Wrote local.properties")
           PY
 
+      # Firebase Cloud Messaging (server push, trove-app #458): the app applies the
+      # google-services plugin only when this file exists, so builds without it still
+      # compile and simply have no push. The file is a client config, not a secret, but it
+      # stays out of the public log and is removed with the source.
+      - name: Write google-services.json for push
+        if: steps.keys.outputs.sign == 'true'
+        working-directory: ${{ runner.temp }}/trove-source/android
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then echo "No GOOGLE_SERVICES_JSON: this build has no push."; exit 0; fi
+          printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+          python3 -I -c 'import json,sys; d=json.load(open("app/google-services.json")); assert any(c["client_info"]["android_client_info"]["package_name"]=="com.adestudios.trove" for c in d["client"])' \
+            && echo "Wrote google-services.json" || { echo "GOOGLE_SERVICES_JSON isn't a google-services.json for com.adestudios.trove"; exit 1; }
+
       - name: Build and sign the release bundle
         if: steps.keys.outputs.sign == 'true'
         working-directory: ${{ runner.temp }}/trove-source/android
