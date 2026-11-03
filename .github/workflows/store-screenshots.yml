@@ -360,7 +360,8 @@ jobs:
     if: ${{ !cancelled() && (needs.ios.outputs.sealed == 'true' || needs.android.outputs.sealed == 'true') }}
     runs-on: ubuntu-24.04
     environment: trove-device-tests
-    timeout-minutes: 20
+    # Six languages, iPhone and iPad, and the previews: about 1.8 GB to decrypt and commit (Nov 3).
+    timeout-minutes: 60
     concurrency:
       group: trove-renders-publish
       cancel-in-progress: false
