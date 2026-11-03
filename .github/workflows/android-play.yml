@@ -7,7 +7,7 @@ name: Trove Android
 #         release APK, then checks every 64-bit native library against Play's
 #         16 KB memory page rule (tools/check_16kb.py, plus zipalign -P 16 on
 #         the APK). Every run does this first.
-# release (environment trove-android, Samuel's review): builds again with the
+# release (environment trove-android, main only, no reviewer since Nov 2: it only ever sends to the Play internal track; promoting beyond internal stays manual in Play Console): builds again with the
 #         upload key, signs, and uses one Play edit to either validate an
 #         internal release (dry run) or commit it. Runs when dry_run is off, or
 #         when a dry run sets validate_with_play. While the upload-key secrets
@@ -47,7 +47,7 @@ on:
         options: [production, staging]
         default: production
       validate_with_play:
-        description: On a dry run, also sign and have Play validate the edit (needs trove-android approval)
+        description: On a dry run, also sign and have Play validate the edit (runs in trove-android, main only)
         required: false
         type: boolean
         default: false
