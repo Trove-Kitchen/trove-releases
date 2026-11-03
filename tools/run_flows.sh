@@ -66,7 +66,10 @@ sample_app() {
     # other one there is Maestro's XCTest runner.
     local pid; pid="$(pgrep -fl 'CoreSimulator/Devices/.*/Bundle/Application/.*\.app/' 2>/dev/null \
       | grep -v -i 'runner\|maestro\|xctest' | awk '{print $1; exit}')"
-    [ -n "$pid" ] || echo "$platform: no app process to sample at ${n}s"
+    if [ -z "$pid" ]; then
+      echo "$platform: no app process to sample at ${n}s; simulator processes named:"
+      ps -axww -o command= | grep 'CoreSimulator/Devices' | grep -o '[^/]*\.app/[^ ]*' | sort -u | head -8 | sed "s/^/$platform:   /"
+    fi
     [ -n "$pid" ] || continue
     sample "$pid" 3 -file "$RUNNER_TEMP/private/sample-$n.txt" > /dev/null 2>&1 || continue
     { printf '<sample at="%ss"><![CDATA[\n' "$n"; sed 's/]]>/]] >/g' "$RUNNER_TEMP/private/sample-$n.txt"; printf ']]></sample>\n'; } \
