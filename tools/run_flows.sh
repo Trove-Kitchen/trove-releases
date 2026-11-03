@@ -53,9 +53,29 @@ fresh_device() {
     adb wait-for-device > /dev/null 2>&1 || true
   fi
 }
+# With a long plan (diagnostics): sample the iPhone app's threads 40, 70 and 100 s into sign-in, so a
+# stalled main thread shows where it is (trove-app #462). Simulator apps are host processes, so macOS
+# `sample` reads them. The samples go to the private renders as XML (renders.py commits .xml), never
+# to this public log.
+sample_app() {
+  mkdir -p "$out/diagnostics"
+  local n
+  for n in 40 70 100; do
+    sleep 30
+    local pid; pid="$(pgrep -f '/Munch\.app/Munch$' | head -1)"
+    [ -n "$pid" ] || continue
+    sample "$pid" 3 -file "$RUNNER_TEMP/private/sample-$n.txt" > /dev/null 2>&1 || continue
+    { printf '<sample at="%ss"><![CDATA[\n' "$n"; sed 's/]]>/]] >/g' "$RUNNER_TEMP/private/sample-$n.txt"; printf ']]></sample>\n'; } \
+      > "$out/diagnostics/sample-$n.xml"
+    echo "$platform: sampled the app at ${n}s"
+  done
+}
 status=0
 for flow in "$src"/flows/[0-9]*.yaml; do
   name="$(basename "$flow" .yaml)"
+  if [ "$platform" = ios ] && [ "${SEED_PLAN_ROWS:-0}" -gt 0 ] && [ "$name" = 01-sign-in ]; then
+    (sleep 10; sample_app) &
+  fi
   run_flow "$flow"; status=$?
   if runner_failed "$out/report-$name.xml"; then
     echo "$platform: $name: the device or its driver failed (maestro exited $status); retrying on a fresh start"
