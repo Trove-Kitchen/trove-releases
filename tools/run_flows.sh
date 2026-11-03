@@ -62,8 +62,10 @@ sample_app() {
   local n
   for n in 40 70 100; do
     sleep 30
-    # The simulator's launchd lists the app's pid, which is a host pid.
-    local pid; pid="$(xcrun simctl spawn booted launchctl list 2>/dev/null | awk -v id="$app_id" 'index($3, id) && $1 ~ /^[0-9]+$/ {print $1; exit}')"
+    # Simulator apps run as host processes from the device's Bundle/Application folder; the only
+    # other one there is Maestro's XCTest runner.
+    local pid; pid="$(pgrep -fl 'CoreSimulator/Devices/.*/Bundle/Application/.*\.app/' 2>/dev/null \
+      | grep -v -i 'runner\|maestro\|xctest' | awk '{print $1; exit}')"
     [ -n "$pid" ] || echo "$platform: no app process to sample at ${n}s"
     [ -n "$pid" ] || continue
     sample "$pid" 3 -file "$RUNNER_TEMP/private/sample-$n.txt" > /dev/null 2>&1 || continue
