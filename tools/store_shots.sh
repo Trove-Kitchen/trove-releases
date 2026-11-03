@@ -205,8 +205,12 @@ PY
       cp "$GITHUB_WORKSPACE/tools/caption_png.mjs" "$shots/.caption.mjs"
       (cd "$shots" && node .caption.mjs "$dest/.caption-$n.txt" "$fonts" "$dest/.caption-$n.png") >> "$log" 2>&1 \
         || { echo "ios: $lang preview: caption $n didn't render"; continue 2; }
+      # Apple takes 15 to 30 seconds: a beat longer than 9 s (Maestro's own pauses) plays faster.
+      local secs speed
+      secs="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$clip")"
+      speed="$(python3 -I -c 'import sys; print(f"{min(1.0, 9.0 / max(float(sys.argv[1]), 0.1)):.4f}")' "${secs:-9}")"
       ffmpeg -nostdin -y -loglevel error -i "$clip" -i "$dest/.caption-$n.png" -an -r 30 \
-        -filter_complex "[0:v]scale=886:-2,crop=886:1920[v];[v][1:v]overlay=(W-w)/2:H*0.78" \
+        -filter_complex "[0:v]setpts=${speed}*PTS,scale=886:-2,crop=886:1920[v];[v][1:v]overlay=(W-w)/2:H*0.78" \
         -c:v libx264 -pix_fmt yuv420p -profile:v high -preset slow -crf 18 "$dest/.clip-$n.mp4" >> "$log" 2>&1 \
         || { echo "ios: $lang preview: clip $n didn't encode ($(grep -oE "No such (filter|file or directory)|Invalid argument|Unknown encoder|not found|Error [a-z ]+" "$log" | tail -1))"; continue 2; }
       echo "file '.clip-$n.mp4'" >> "$list"
