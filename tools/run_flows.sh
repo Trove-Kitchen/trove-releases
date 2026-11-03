@@ -62,7 +62,9 @@ sample_app() {
   local n
   for n in 40 70 100; do
     sleep 30
-    local pid; pid="$(pgrep -f '/Munch\.app/Munch$' | head -1)"
+    # The simulator's launchd lists the app's pid, which is a host pid.
+    local pid; pid="$(xcrun simctl spawn booted launchctl list 2>/dev/null | awk -v id="$app_id" 'index($3, id) && $1 ~ /^[0-9]+$/ {print $1; exit}')"
+    [ -n "$pid" ] || echo "$platform: no app process to sample at ${n}s"
     [ -n "$pid" ] || continue
     sample "$pid" 3 -file "$RUNNER_TEMP/private/sample-$n.txt" > /dev/null 2>&1 || continue
     { printf '<sample at="%ss"><![CDATA[\n' "$n"; sed 's/]]>/]] >/g' "$RUNNER_TEMP/private/sample-$n.txt"; printf ']]></sample>\n'; } \
