@@ -86,6 +86,11 @@ def main() -> None:
         g = by_name.get(name.lower())
         if not g:
             continue
+        if g["attributes"].get("hasAccessToAllBuilds"):
+            # An internal group with automatic distribution already has every build;
+            # Apple refuses to assign one ("Builds cannot be assigned to this internal group").
+            print(f"{g['attributes']['name']} gets every build already")
+            continue
         call("POST", f"/v1/betaGroups/{g['id']}/relationships/builds", {"data": [{"type": "builds", "id": build["id"]}]})
         print(f"Added to {g['attributes']['name']}")
     if missing:
