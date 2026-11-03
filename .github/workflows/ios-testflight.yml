@@ -7,7 +7,9 @@ name: Trove iOS
 # Source never lives here. The trove-kitchen-ci GitHub App (contents: read,
 # installed on trove-app and trove-commerce only) mints a short-lived token
 # per run to clone it: TROVE_CI_APP_ID + TROVE_CI_APP_PRIVATE_KEY.
-# Apple credentials live in the `trove-ios` environment, not in the app repo.
+# Apple credentials live in the `trove-testflight` environment (no reviewers, main only;
+# its App Store Connect key is TestFlight-only by agreement, never App Store submission),
+# not in the app repo. `trove-ios` keeps its reviewers for anything else.
 #
 # dry_run: true  -> archive, export, and `altool --validate-app`. Apple runs the
 #                   full upload check and publishes nothing. Nothing reaches
@@ -48,7 +50,7 @@ permissions:
 jobs:
   ios:
     runs-on: macos-latest
-    environment: trove-ios
+    environment: trove-testflight
     timeout-minutes: 90
     env:
       TEAM_ID: R6A892D599
@@ -159,7 +161,7 @@ jobs:
           if [ "${{ inputs.backend }}" = staging ]; then
             for has in "$HAS_STAGING_URL" "$HAS_STAGING_ANON" "$HAS_STAGING_RESOLVER"; do
               if [ "$has" != true ]; then
-                echo "A STAGING_* secret is missing from trove-ios; refusing to build staging against production."
+                echo "A STAGING_* secret is missing from trove-testflight; refusing to build staging against production."
                 exit 1
               fi
             done
