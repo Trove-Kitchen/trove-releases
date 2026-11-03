@@ -50,9 +50,9 @@ on:
         required: true
         default: migration
         type: choice
-        options: [migration, content, mirror-covers, mirror-blocked-covers]
+        options: [migration, content, batch, mirror-covers, mirror-blocked-covers]
       path:
-        description: 'For migration and content: the file, e.g. supabase/migrations/0012_recipe_saves_privacy.sql'
+        description: 'For migration and content: the file, e.g. supabase/migrations/0012_recipe_saves_privacy.sql. For batch: several migration or content files, space separated, run in that order in one transaction (one approval)'
         required: false
         type: string
       apply:
@@ -103,6 +103,17 @@ jobs:
                 || { echo "path must be docs/content/featured-collections/<name>.sql"; exit 1; }
               [[ "$(basename "$path")" != preview-* ]] \
                 || { echo "Preview scripts print a secret token; the local lane runs them."; exit 1; } ;;
+            batch)
+              # Several files, in order, in ONE transaction: all kept or none (Samuel, Nov 3: one
+              # approval for a set of production changes instead of one per file).
+              n=0
+              for f in $path; do
+                n=$((n + 1))
+                [[ "$f" =~ ^supabase/migrations/[0-9]{4}_[a-z0-9_]+\.sql$ || "$f" =~ ^docs/content/featured-collections/[a-z0-9]+(-[a-z0-9]+)*\.sql$ ]] \
+                  || { echo "each path must be supabase/migrations/NNNN_name.sql or docs/content/featured-collections/<name>.sql"; exit 1; }
+                [[ "$(basename "$f")" != preview-* ]] || { echo "Preview scripts print a secret token; the local lane runs them."; exit 1; }
+              done
+              [ "$n" -ge 1 ] && [ "$n" -le 10 ] || { echo "batch takes 1 to 10 files"; exit 1; } ;;
             mirror-covers|mirror-blocked-covers)
               [ -z "$path" ] || { echo "$task takes no path"; exit 1; }
               [ -z "$after" ] || [[ "$after" =~ ^[A-Za-z0-9_-]{1,200}$ ]] \
@@ -156,11 +167,12 @@ jobs:
           FILE: ${{ inputs.path }}
           APPLY: ${{ inputs.apply }}
         run: |
-          [ -f "$FILE" ] || { echo "That file is not in trove-app at this commit."; exit 1; }
+          for f in $FILE; do [ -f "$f" ] || { echo "$f is not in trove-app at this commit."; exit 1; }; done
           log="$RUNNER_TEMP/psql.log"
           end=rollback; [ "$APPLY" = "true" ] && end=commit
           set +e
-          { echo 'begin;'; cat "$FILE"; echo; echo "$end;"; } \
+          # One transaction around every file (a batch runs its files in the order given).
+          { echo 'begin;'; for f in $FILE; do echo "-- $f"; cat "$f"; echo; done; echo "$end;"; } \
             | psql "$DB_URL" -X -q -v ON_ERROR_STOP=1 -o /dev/null > "$log" 2>&1
           status=$?
           set -e
@@ -173,7 +185,7 @@ jobs:
           rm -f "$log"
           if [ "$end" = commit ]; then
             psql "$DB_URL" -X -q -c "notify pgrst, 'reload schema';" > /dev/null
-            echo "Applied and committed. PostgREST was told to reload its schema."
+            echo "Applied and committed: $FILE. PostgREST was told to reload its schema."
           else
             echo "Dry run: the file ran without errors and was rolled back. Nothing was kept."
           fi
