@@ -215,7 +215,16 @@ PY
         || { echo "ios: $lang preview: clip $n didn't encode ($(grep -oE "No such (filter|file or directory)|Invalid argument|Unknown encoder|not found|Error [a-z ]+" "$log" | tail -1))"; continue 2; }
       echo "file '.clip-$n.mp4'" >> "$list"
     done < <(python3 -I -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["previewBeats"]))' "$src/scripts/localization/store/captions.json")
-    (cd "$dest" && ffmpeg -nostdin -y -loglevel error -f concat -safe 0 -i .clips.txt -c copy app-preview.mp4) >> "$log" 2>&1 \
+    # The joined preview, then sped up as a whole when it runs past 29 s: Maestro's raw clips
+    # can report a shorter length than they play, so the per-beat cap above can miss.
+    (cd "$dest" && ffmpeg -nostdin -y -loglevel error -f concat -safe 0 -i .clips.txt -c copy .joined.mp4) >> "$log" 2>&1
+    local total; total="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$dest/.joined.mp4" 2>/dev/null)"
+    if python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1] or 0) > 29 else 1)' "${total:-0}"; then
+      local fit; fit="$(python3 -I -c 'import sys; print(f"{28.5 / float(sys.argv[1]):.4f}")' "$total")"
+      (cd "$dest" && ffmpeg -nostdin -y -loglevel error -i .joined.mp4 -an -r 30 -vf "setpts=${fit}*PTS" \
+        -c:v libx264 -pix_fmt yuv420p -profile:v high -preset slow -crf 18 .fitted.mp4 && mv .fitted.mp4 .joined.mp4) >> "$log" 2>&1
+    fi
+    (cd "$dest" && mv .joined.mp4 app-preview.mp4) >> "$log" 2>&1 \
       && echo "ios: $lang preview: $(ffprobe -v error -show_entries format=duration -of csv=p=0 "$dest/app-preview.mp4" | cut -d. -f1)s" \
       || echo "ios: $lang preview: join failed"
     rm -f "$dest"/.clip-*.mp4 "$dest"/.caption-*.txt "$dest"/.caption-*.png "$list" "$shots/.caption.mjs"
