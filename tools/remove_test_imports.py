@@ -1,7 +1,7 @@
 """Before a device run: remove the staging test account's earlier imports of the
 flows' recipe link, and the plan rows that point at them, so each run imports
-into the same library instead of adding another copy. Only imports older than
-an hour go: the iPhone, Android and web runs can overlap, and none may delete
+into the same library instead of adding another copy, and every meal plan row
+older than an hour. Only rows older than an hour go: the iPhone, Android and web runs can overlap, and none may delete
 a copy another run is still using.
 
 Staging only (checks the project ref). Prints counts, never values.
@@ -47,6 +47,16 @@ def main():
         call('DELETE', f'{base}/rest/v1/meal_plan_items?owner=eq.{owner}&recipe_id=in.{listed}', key, token)
         call('DELETE', f'{base}/rest/v1/recipes?owner=eq.{owner}&id=in.{listed}', key, token)
     print(f'cleanup: removed {len(ids)} earlier import(s) of the test link')
+    # The account exists for these runs only. Every run plans the test recipe again, and plan
+    # rows that point at other copies (a community card, a cook-from copy) outlived the step
+    # above, so the plan and grocery list kept growing until the iPhone's main thread stalled
+    # after sign-in (trove-app #453, Nov 3). Rows older than an hour go, whatever they point at.
+    old = call('GET', f'{base}/rest/v1/meal_plan_items?select=id&owner=eq.{owner}'
+                      f'&created_at=lt.{urllib.parse.quote(cutoff, safe="")}', key, token) or []
+    if old:
+        call('DELETE', f'{base}/rest/v1/meal_plan_items?owner=eq.{owner}'
+                       f'&created_at=lt.{urllib.parse.quote(cutoff, safe="")}', key, token)
+    print(f'cleanup: removed {len(old)} earlier meal plan row(s)')
     return 0
 
 
