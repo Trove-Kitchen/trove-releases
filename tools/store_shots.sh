@@ -136,7 +136,7 @@ frame_set() {
     done
   fi
   # The build's own complaints (frame names and layout notes, no source) are worth seeing here.
-  grep -E '^(not built|layout warnings)|^  (ios|android)[/:]' "$log" | sed "s/^/$platform: /" | tail -n 20 || true
+  grep -E '^(not built|layout warnings)|^  [A-Za-z0-9/_.-]+: ' "$log" | sed "s/^/$platform: /" | tail -n 20 || true
   # junit: one case per capture (present and not blank), one for the framed set.
   python3 -I - "$out" "$platform" "$status" $LANGS <<'PY'
 import os, sys
