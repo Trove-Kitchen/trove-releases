@@ -351,7 +351,11 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work, capture_output=True, text=True).stdout.strip()
     shots = [{"platform": p, "path": f"{kind}/{folder}/{rel}"}
              for p, rels in files.items() for rel in rels
-             if rel.lower().endswith(".png") and "/takeScreenshot/" in rel]
+             if (rel.lower().endswith(".png") and "/takeScreenshot/" in rel)
+             # Store screenshots: the framed sets, header images and app previews (report.py gallery).
+             # (rel starts with the platform: "ios/store/de/01-….png")
+             or (kind == "store-screenshots" and (rel.split("/", 1)[-1].startswith("store/") and rel.lower().endswith(".png")
+                                                  or rel.split("/", 1)[-1].startswith("preview/") and rel.lower().endswith(".mp4")))]
     (temp() / "renders-screens.json").write_text(json.dumps({"commit": commit, "shots": shots}))
 
     # Recordings: the sealed archives, still encrypted, as release assets.

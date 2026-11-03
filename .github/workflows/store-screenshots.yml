@@ -1,7 +1,7 @@
 name: Trove store screenshots
 
 # trove-app's App Store and Google Play screenshots, from the real app:
-#   - iOS: an iPhone 6.9-inch simulator (1320x2868), status bar at 9:41 and full battery
+#   - iOS: an iPhone 6.9-inch simulator (1320x2868) and an iPad 13-inch (2064x2752), status bar at 9:41 and full battery
 #   - Android: a Pixel 7 emulator (1080x2400), the same status bar through demo mode;
 #     build.mjs frames it on a 1080x2160 (1:2) Play canvas
 # Each frame launches a fresh DEBUG install with the store-screenshot account
@@ -10,6 +10,8 @@ name: Trove store screenshots
 # with two lines Stocked, a full Discover, and the Import sheet with a link read.
 # The builds carry no Supabase config, so nothing reaches staging or production;
 # Android's resolver points at a .invalid host for the same reason.
+# On iPhone, trove-app's flows/preview/ also record the App Store app preview in
+# each language (Maestro), captioned and joined with ffmpeg at 886x1920.
 # Then trove-app's docs/app-store/screenshots/build.mjs frames them with the
 # captions in frames.json, plus a stamped proof set with a contact sheet.
 #
@@ -36,6 +38,15 @@ on:
         type: choice
         options: [both, ios, android]
         default: both
+      pr_number:
+        description: trove-app pull request to post the gallery on (optional)
+        required: false
+        type: string
+      languages:
+        description: iPhone languages, space separated (en, de, es, es-ES, fr, pt-BR, pt-PT). Each is framed with its captions (needs a trove-app with the localized set).
+        required: false
+        default: en
+        type: string
   pull_request:
     paths:
       - .github/workflows/store-screenshots.yml
@@ -99,7 +110,7 @@ jobs:
     if: inputs.platforms != 'android'
     runs-on: macos-26
     environment: trove-device-tests
-    timeout-minutes: 75
+    timeout-minutes: 180
     outputs:
       sealed: ${{ steps.seal.outputs.sealed }}
     steps:
@@ -158,7 +169,47 @@ jobs:
           xcrun simctl ui "$udid" appearance light
           xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
             --cellularMode active --cellularBars 4 --operatorName '' --batteryState charged --batteryLevel 100
-          tools/store_shots.sh capture ios "$app"
+          STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" tools/store_shots.sh capture ios "$app"
+          xcrun simctl delete "$udid"
+
+      - name: Install Maestro and ffmpeg
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/maestro.zip" https://github.com/mobile-dev-inc/maestro/releases/download/cli-2.10.0/maestro.zip
+          unzip -q "$RUNNER_TEMP/maestro.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/maestro/bin" >> "$GITHUB_PATH"
+          brew install ffmpeg > /dev/null 2>&1 || brew install ffmpeg
+          ffmpeg -version | head -1
+
+      - name: Record the app previews on an iPhone 6.9-inch simulator
+        run: |
+          app="$(find "$RUNNER_TEMP/derived/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -1)"
+          udid=""
+          for device in "iPhone 17 Pro Max" "iPhone 16 Pro Max" "iPhone 16 Plus"; do
+            udid="$(xcrun simctl create trove-preview "$device" 2>/dev/null)" && break
+          done
+          [ -n "$udid" ] || { echo "No 6.9-inch iPhone simulator on this runner"; exit 1; }
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b > /dev/null
+          xcrun simctl ui "$udid" appearance light
+          xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
+            --cellularMode active --cellularBars 4 --operatorName '' --batteryState charged --batteryLevel 100
+          STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" tools/store_shots.sh preview ios "$app"
+          xcrun simctl delete "$udid"
+
+      - name: Capture on an iPad 13-inch simulator
+        run: |
+          app="$(find "$RUNNER_TEMP/derived/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -1)"
+          udid=""
+          for device in "iPad Pro 13-inch (M5)" "iPad Pro 13-inch (M4)" "iPad Air 13-inch (M3)" "iPad Air 13-inch (M2)"; do
+            udid="$(xcrun simctl create trove-store-ipad "$device" 2>/dev/null)" && { echo "simulator: $device"; break; }
+          done
+          [ -n "$udid" ] || { echo "No 13-inch iPad simulator on this runner"; exit 1; }
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b > /dev/null
+          xcrun simctl ui "$udid" appearance light
+          xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
+            --batteryState charged --batteryLevel 100
+          STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" tools/store_shots.sh capture ios "$app" ipad
           xcrun simctl delete "$udid"
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -174,7 +225,8 @@ jobs:
           cd "$RUNNER_TEMP/trove-source/docs/app-store/screenshots"
           npm i --no-save --silent "playwright@$PLAYWRIGHT_VERSION" > "$RUNNER_TEMP/private/npm.log" 2>&1
           npx playwright install chromium > "$RUNNER_TEMP/private/playwright.log" 2>&1
-          "$GITHUB_WORKSPACE/tools/store_shots.sh" frame ios "$fonts"
+          STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" "$GITHUB_WORKSPACE/tools/store_shots.sh" frame ios "$fonts"
+          STORE_LANGS="$(jq -r '.inputs.languages // "en"' "$GITHUB_EVENT_PATH")" "$GITHUB_WORKSPACE/tools/store_shots.sh" compose ios "$fonts"
 
       - name: Seal the screenshots
         id: seal
@@ -341,6 +393,31 @@ jobs:
           TROVE_RENDERS_TOKEN: ${{ steps.renders-token.outputs.token }}
           SHA: ${{ needs.resolve.outputs.sha }}
         run: python3 -I tools/renders.py publish store-screenshots "$SHA" "$RUNNER_TEMP/sealed"
+
+      # The gallery goes to the trove-app pull request as images from the private trove-renders;
+      # only people who can open trove-renders see them. Nothing here is printed.
+      - name: Mint a token that can only comment on the trove-app pull request
+        id: comment-token
+        if: inputs.pr_number != ''
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-pull-requests: write
+
+      - name: Post the gallery on the trove-app pull request
+        if: inputs.pr_number != ''
+        env:
+          TROVE_PR_COMMENT_TOKEN: ${{ steps.comment-token.outputs.token }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          VERDICT: ${{ (needs.android.result != 'failure' && needs.ios.result != 'failure') && 'passed' || 'failed' }}
+        run: |
+          pr="$(jq -r '.inputs.pr_number // ""' "$GITHUB_EVENT_PATH")"
+          [[ "$pr" =~ ^[0-9]{1,6}$ ]] || { echo "pr_number must be a number"; exit 1; }
+          python3 -I tools/report.py gallery "$RUNNER_TEMP/renders-screens.json" "$RUNNER_TEMP/gallery.md"
+          python3 -I tools/report.py post "Store screenshots" "$RUNNER_TEMP/gallery.md" "$pr" "$SHA" "$VERDICT"
 
       - name: Remove decrypted files
         if: always()
