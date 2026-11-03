@@ -3,7 +3,7 @@ name: Trove TestFlight details
 # For a build already uploaded by Trove iOS (ios-testflight.yml): waits for Apple's
 # processing, answers export compliance if it's open, sets "What to Test" and adds the
 # build to TestFlight groups. Run with no groups to list them. Uses the same App Store
-# Connect key as the upload (environment trove-ios). Prints group names and verdicts only.
+# Connect key as the upload (environment trove-testflight). Prints group names and verdicts only.
 
 run-name: 'TestFlight details for build ${{ inputs.build_number }}'
 
@@ -29,7 +29,7 @@ permissions:
 jobs:
   details:
     runs-on: ubuntu-24.04
-    environment: trove-ios
+    environment: trove-testflight
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
