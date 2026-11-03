@@ -23,6 +23,8 @@ else
 fi
 # Same library every run: drop the test account's earlier imports of the test link.
 python3 -I "$tools/remove_test_imports.py" || true
+# On request (device-tests input long_plan): a long meal plan, to check sign-in with one.
+python3 -I "$tools/seed_long_plan.py" || true
 cd "$out"
 # One Maestro run per flow, in file order (01-, 02-, ...), each capped at 10 minutes: Maestro's iOS driver
 # sometimes hangs (often while stopping a recording), and a hang should cost one flow, not the whole job.

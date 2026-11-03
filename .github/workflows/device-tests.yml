@@ -37,6 +37,14 @@ on:
         description: trove-app pull request to post the screenshots on (optional)
         required: false
         type: string
+      long_plan:
+        description: Give the test account this many planned meals before the run (0 = as is)
+        required: false
+        default: '0'
+        type: string
+
+env:
+  SEED_PLAN_ROWS: ${{ inputs.long_plan || '0' }}
 
 concurrency:
   group: trove-device-tests
