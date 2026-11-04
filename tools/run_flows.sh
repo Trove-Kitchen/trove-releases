@@ -53,6 +53,31 @@ fresh_device() {
     adb wait-for-device > /dev/null 2>&1 || true
   fi
 }
+# iPhone only: the app's main thread sometimes stays busy for 30 s or more right after sign-in, and Maestro
+# then times out reading the screen. While the first flows run, take a 3-second `sample` of the app's
+# process every 15 seconds (the simulator app is a Mac process), for up to 4 minutes after it starts.
+# Stacks only, no typed text; they go to the private renders repo as hang-sample-*.txt, never to this log.
+sampler=""
+if [ "$platform" = ios ] && command -v sample > /dev/null; then
+  exe="$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Info.plist" 2>/dev/null)"
+  if [ -n "$exe" ]; then
+    mkdir -p "$out/diagnostics"
+    (
+      taken=0; first=""
+      while [ "$taken" -lt 16 ]; do
+        pid="$(pgrep -f "\.app/$exe\$" | head -1)"
+        if [ -n "$pid" ]; then
+          first="${first:-$SECONDS}"
+          [ $((SECONDS - first)) -gt 240 ] && break
+          sample "$pid" 3 -file "$out/diagnostics/hang-sample-$(printf %03d $((SECONDS - first)))s.txt" > /dev/null 2>&1 || true
+          taken=$((taken + 1))
+        fi
+        sleep 12
+      done
+    ) &
+    sampler=$!
+  fi
+fi
 status=0
 for flow in "$src"/flows/[0-9]*.yaml; do
   name="$(basename "$flow" .yaml)"
@@ -69,6 +94,7 @@ for flow in "$src"/flows/[0-9]*.yaml; do
   # A flow that really failed stops the run, as Maestro's continueOnFailure: false did.
   if [ "$status" -ne 0 ]; then break; fi
 done
+[ -n "$sampler" ] && kill "$sampler" 2>/dev/null
 echo "$platform: maestro exited $status"
 # Flow names only (each flow gets a folder when it starts), so a hang shows where it stopped.
 for d in "$out"/maestro/*/*/; do [ -d "$d" ] && echo "$platform: started  $(basename "$d")"; done

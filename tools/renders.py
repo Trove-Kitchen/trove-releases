@@ -290,7 +290,9 @@ def publish(kind: str, sha: str, sealed_dir: str) -> None:
             p = s["platform"]
             src = plain / p
             for f in sorted(src.rglob("*")) if src.is_dir() else []:
-                if (f.is_file() and f.suffix.lower() in COMMITTED and not f.name.startswith("commands-")
+                # hang-sample-*.txt: stack samples of a busy iPhone app (run_flows.sh), no typed text.
+                sample = f.suffix == ".txt" and f.name.startswith("hang-sample-")
+                if (f.is_file() and (f.suffix.lower() in COMMITTED or sample) and not f.name.startswith("commands-")
                         and f.stat().st_size < 20 * 1024 * 1024):
                     rel = Path(p) / f.relative_to(src)
                     (tree / rel).parent.mkdir(parents=True, exist_ok=True)
