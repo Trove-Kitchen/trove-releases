@@ -32,6 +32,7 @@ Being public costs nothing here because there is no source and no readable secre
 | **Trove web flows** (`web-flows.yml`) | Linux | `trove-device-tests` | trove-app's Playwright flows pass in Chromium (phone and desktop) against trove-staging; videos go to trove-renders |
 | **Trove Android** (`android-play.yml`) | Linux | `trove-android` for the release job | `bundleRelease` builds and meets Play's 16 KB page rule; signs and sends to the Play **internal** track when `dry_run` is off |
 | **Trove database ops** (`db-ops.yml`) | Linux | `trove-staging`, or `trove-production` (approval required) | Runs one trove-app migration, content script or the expired-photo repair against staging or production. Dry run by default |
+| **Trove import eval** (`import-eval.yml`) | Linux | `trove-evals` | Compares the import gate and step check with TypeSafe's Jev on the trove-dev-sessions training set; counts, latencies and cost only. `dry` needs no key |
 
 The check workflows (iOS compile, Android unit tests, web tests, video resolver container) take a trove-app `ref` and, optionally, a trove-app `pr_number`. They are built for agents that have no Mac: dispatch one at a branch and read the result. A pull request that changes a check workflow, `fetch-source` or `tools/report.py` runs that check once against trove-app `main`.
 

@@ -1,0 +1,204 @@
+name: Trove import eval
+
+# Compares the import pipeline's two decision steps, today's rules against
+# TypeSafe's Jev decision model, on the local lane's import training set:
+#
+#   gate       "is this text a recipe?"        today: extract.is_plausible_recipe
+#   grounding  "is this step in the source?"   today: extract.grounded_steps
+#
+# tools/import_eval.py replays the recorded extractions from
+# Trove-Kitchen/trove-dev-sessions (evals/<dataset>/) through the resolver's own
+# extract.py at a trove-app ref, asks Jev the same questions, and reports
+# accuracy, latency and cost. `dry` runs today's side only and needs no key.
+#
+# This repository is public. The log, the step summary and the artifact hold
+# counts, percentages, latencies and costs only: never captions, transcripts,
+# recipe text or post URLs. Both private checkouts are deleted at the end.
+#
+# Environment trove-evals: TYPESAFE_API_KEY (not needed for a dry run).
+# The trove-kitchen-ci app must be installed on trove-dev-sessions (contents: read).
+
+run-name: 'Trove import eval (${{ inputs.dry && ''dry'' || inputs.model || ''dry'' }})'
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: trove-app branch, tag or full commit for the resolver (never shown in the log)
+        required: true
+        default: main
+        type: string
+      dev_sessions_ref:
+        description: trove-dev-sessions branch, tag or full commit for the training set (never shown in the log)
+        required: true
+        default: main
+        type: string
+      dataset:
+        description: folder under trove-dev-sessions evals/ (its report is research/<dataset>.md)
+        required: true
+        default: import-training-2026-11-07
+        type: string
+      model:
+        description: Jev model, pinned (jev-1.14.0) or an alias (jev-latest)
+        required: true
+        default: jev-1.14.0
+        type: string
+      dry:
+        description: today's rules only; no TypeSafe call and no key needed
+        required: false
+        default: false
+        type: boolean
+  # Changing this eval runs it once, dry, on its own pull request.
+  # Pull requests from forks get no secrets, so they cannot reach the source.
+  pull_request:
+    paths:
+      - .github/workflows/import-eval.yml
+      - tools/import_eval.py
+
+concurrency:
+  group: trove-import-eval
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-24.04
+    environment: trove-evals
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Read the inputs
+        id: inputs
+        run: |
+          # Read from the event, so no ref or dataset is interpolated into a script.
+          ref="$(jq -r '.inputs.ref // "main"' "$GITHUB_EVENT_PATH")"
+          ds_ref="$(jq -r '.inputs.dev_sessions_ref // "main"' "$GITHUB_EVENT_PATH")"
+          dataset="$(jq -r '.inputs.dataset // "import-training-2026-11-07"' "$GITHUB_EVENT_PATH")"
+          model="$(jq -r '.inputs.model // "jev-1.14.0"' "$GITHUB_EVENT_PATH")"
+          dry="$(jq -r 'if .inputs.dry == null then "true" else (.inputs.dry | tostring) end' "$GITHUB_EVENT_PATH")"
+          [ "${GITHUB_EVENT_NAME}" = pull_request ] && dry=true
+          for r in "$ref" "$ds_ref"; do
+            printf '%s' "$r" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "refs must be a branch, tag or commit"; exit 1; }
+          done
+          printf '%s' "$dataset" | grep -Eq '^[a-z0-9][a-z0-9-]{0,99}$' || { echo "dataset must be a folder name"; exit 1; }
+          printf '%s' "$model" | grep -Eq '^[a-z0-9][a-z0-9.-]{0,63}$' || { echo "model must look like jev-1.14.0"; exit 1; }
+          {
+            echo "dataset=$dataset"
+            echo "model=$model"
+            echo "dry=$dry"
+          } >> "$GITHUB_OUTPUT"
+          # Refs stay out of outputs that print; they go to the next steps through files.
+          mkdir -p "$RUNNER_TEMP/refs"
+          printf '%s' "$ref" > "$RUNNER_TEMP/refs/trove-app"
+          printf '%s' "$ds_ref" > "$RUNNER_TEMP/refs/trove-dev-sessions"
+          echo "dataset $dataset, model $model, dry $dry"
+
+      - name: Mint a read-only token for trove-app
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-contents: read
+
+      # trove-app branch names are private: resolve the ref to its commit without printing it.
+      - name: Resolve the trove-app commit, printing no branch name
+        id: commit
+        env:
+          TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          ref="$(cat "$RUNNER_TEMP/refs/trove-app")"
+          if printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+            sha="$ref"
+          else
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+            echo "::add-mask::$auth"
+            sha="$(git -c http.extraheader="$auth" ls-remote https://github.com/Trove-Kitchen/trove-app.git \
+              "refs/heads/$ref" "refs/tags/$ref" | awk 'NR == 1 { print $1 }')"
+            [ -n "$sha" ] || { echo "ref is not a trove-app branch, tag or full commit"; exit 1; }
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ steps.commit.outputs.sha }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Mint a read-only token for trove-dev-sessions
+        id: sessions-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-dev-sessions
+          permission-contents: read
+
+      - name: Fetch the training set quietly
+        env:
+          TOKEN: ${{ steps.sessions-token.outputs.token }}
+          DATASET: ${{ steps.inputs.outputs.dataset }}
+        run: |
+          ref="$(cat "$RUNNER_TEMP/refs/trove-dev-sessions")"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          dst="$RUNNER_TEMP/trove-dev-sessions"
+          rm -rf "$dst" && mkdir -p "$dst"
+          git -C "$dst" init -q
+          git -C "$dst" remote add origin https://github.com/Trove-Kitchen/trove-dev-sessions.git
+          git -C "$dst" config core.sparseCheckout true
+          printf '/evals/%s/\n/research/%s.md\n' "$DATASET" "$DATASET" > "$dst/.git/info/sparse-checkout"
+          git -C "$dst" -c http.extraheader="$auth" fetch -q --depth 1 --filter=blob:none origin "$ref" \
+            || { echo "dev_sessions_ref is not a trove-dev-sessions branch, tag or commit"; exit 1; }
+          git -C "$dst" -c http.extraheader="$auth" checkout -q FETCH_HEAD
+          [ -d "$dst/evals/$DATASET/out" ] || { echo "no evals/<dataset>/out at that ref"; exit 1; }
+          echo "trove-dev-sessions $(git -C "$dst" rev-parse HEAD), $(ls "$dst/evals/$DATASET/out" | wc -l) files"
+
+      - name: Run the eval
+        id: eval
+        env:
+          TYPESAFE_API_KEY: ${{ steps.inputs.outputs.dry != 'true' && secrets.TYPESAFE_API_KEY || '' }}
+          DATASET: ${{ steps.inputs.outputs.dataset }}
+          MODEL: ${{ steps.inputs.outputs.model }}
+          DRY: ${{ steps.inputs.outputs.dry }}
+        run: |
+          out="$RUNNER_TEMP/import-eval"
+          mkdir -p "$out"
+          data="$RUNNER_TEMP/trove-dev-sessions/evals/$DATASET"
+          flags=()
+          if [ "$DRY" = "true" ]; then
+            flags+=(--dry)
+          elif [ -z "$TYPESAFE_API_KEY" ]; then
+            echo "TYPESAFE_API_KEY is not set in the trove-evals environment; run with dry, or add it."
+            exit 1
+          fi
+          # The script prints counts only; a failure prints the error type, never a traceback.
+          python3 -I tools/import_eval.py \
+            --resolver "$RUNNER_TEMP/trove-source/services/video-resolver" \
+            --data "$data" \
+            --report "$RUNNER_TEMP/trove-dev-sessions/research/$DATASET.md" \
+            --model "$MODEL" "${flags[@]}" \
+            --out-json "$out/import-eval.json" --out-md "$out/import-eval.md"
+          cat "$out/import-eval.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the aggregate (counts only)
+        if: steps.eval.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: import-eval
+          path: |
+            ${{ runner.temp }}/import-eval/import-eval.json
+            ${{ runner.temp }}/import-eval/import-eval.md
+          retention-days: 30
+
+      - name: Remove private source and training data
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/trove-dev-sessions" "$RUNNER_TEMP/refs"
