@@ -291,6 +291,7 @@ jobs:
           udid="$(xcrun simctl create trove-flows 'iPhone 16 Pro')"
           xcrun simctl boot "$udid"
           xcrun simctl bootstatus "$udid" -b > /dev/null
+          echo "ios: simulator created and booted in $SECONDS s"
           tools/run_flows.sh ios "$app"
           xcrun simctl delete "$udid"
 
