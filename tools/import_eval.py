@@ -34,7 +34,11 @@ expected/<id>.json). So:
     digits, numbers split from units, numbers strict, at most one unknown word in five).
     This is a silver label: the report checked every step the rule added back; the
     steps it rejects were not hand-checked.
-  * gold wins: when expected/<id>.json exists, its ingredients/steps decide that post.
+  * gold wins: when expected/<id>.json exists, its ingredients/steps decide that post's gate
+    label. Its step_labels (one row per recorded step: variant, extractor, index, step,
+    supported) decide each step; a step with no row falls back to word overlap with the
+    gold steps. The markdown adds a table for the gold-labelled posts alone, with the
+    relaxed rule as a third decision maker next to today's rule and Jev.
 """
 from __future__ import annotations
 
@@ -248,6 +252,15 @@ def gold_supported(step: str, gold_steps: list[str]) -> bool:
     return False
 
 
+def gold_step_label(gold: dict, variant: str, extractor: str, index: int, step: str) -> bool | None:
+    """The hand label for one recorded step, or None when the gold file has no row for it."""
+    for row in gold.get("step_labels") or []:
+        if (row.get("variant") == variant and row.get("extractor") == extractor
+                and row.get("index") == index and row.get("step") == step):
+            return bool(row.get("supported"))
+    return None
+
+
 def load_gold(data: str, post: str) -> dict | None:
     path = os.path.join(data, "expected", f"{post}.json")
     if not os.path.exists(path):
@@ -420,7 +433,10 @@ def run(args) -> dict:
     jev_probs: list[tuple[bool, float]] = []
     by_extractor: dict[str, dict[str, list]] = {}
     lat_now_step, lat_jev_req, steps_per_req = [], [], []
-    step_label_source = {"gold": 0, "silver": 0}
+    step_label_source = {"gold": 0, "gold_overlap": 0, "silver": 0}
+    gold_posts = {p for p in posts if load_gold(args.data, p) is not None}
+    g_rows = {"now": [], "relaxed": [], "jev": []}  # gold-labelled posts only
+    g_e2e = {"now": 0, "relaxed": 0, "jev": 0, "n": 0}
     strict_kept_silver_negative = 0
     e2e = {"now": 0, "jev": 0, "n": 0}
     detail = []
@@ -436,12 +452,18 @@ def run(args) -> dict:
         gold = load_gold(args.data, post)
         index = SourceIndex(text)
         labels = []
-        for s in steps:
+        relaxed = [silver_supported(s, index) for s in steps]
+        for i, s in enumerate(steps):
             if gold is not None:
-                labels.append(gold_supported(s, gold.get("steps") or []))
-                step_label_source["gold"] += 1
+                hand = gold_step_label(gold, r["variant"], r["extractor"], i, s)
+                if hand is not None:
+                    labels.append(hand)
+                    step_label_source["gold"] += 1
+                else:
+                    labels.append(gold_supported(s, gold.get("steps") or []))
+                    step_label_source["gold_overlap"] += 1
             else:
-                labels.append(silver_supported(s, index))
+                labels.append(relaxed[i])
                 step_label_source["silver"] += 1
 
         # Today's grounding, one decision at a time (for latency), then the real pipeline end to end.
@@ -496,6 +518,24 @@ def run(args) -> dict:
                 else:
                     jev_ok = imported and all(k == l for k, l in zip(jev_keep, labels))
                 e2e["jev"] += int(jev_ok)
+            if post in gold_posts:
+                g_e2e["n"] += 1
+                g_e2e["now"] += int(now_ok)
+                # The relaxed rule swaps only the step check: today's gate and ingredient check stay.
+                if not positive:
+                    relaxed_ok = out is None
+                else:
+                    relaxed_ok = (gate_now.get(post, False) and parsed is not None
+                                  and X.is_grounded(parsed["ingredients"], lowered) and relaxed == labels)
+                g_e2e["relaxed"] += int(bool(relaxed_ok))
+                if jev is not None:
+                    g_e2e["jev"] += int(jev_ok)
+        if post in gold_posts:
+            for i, lab in enumerate(labels):
+                g_rows["now"].append((lab, now_keep[i]))
+                g_rows["relaxed"].append((lab, relaxed[i]))
+                if jev_keep[i] is not None:
+                    g_rows["jev"].append((lab, jev_keep[i]))
         if args.detail:
             for i, lab in enumerate(labels):
                 detail.append({"post": post, "variant": r["variant"], "extractor": r["extractor"],
@@ -532,6 +572,20 @@ def run(args) -> dict:
                                     for t in THRESHOLDS} if jev else None,
         },
         "import_right_proxy": {"n": e2e["n"], "now": e2e["now"], "jev": e2e["jev"] if jev else None},
+        "gold_only": {
+            "posts": len(gold_posts),
+            "gate": {
+                "now": gate_metrics([(truth[p], gate_now[p]) for p in gate_now if p in gold_posts]),
+                "jev": gate_metrics([(truth[p], gate_jev[p]) for p in gate_jev if p in gold_posts]) if jev else None,
+            },
+            "steps": {
+                "now": step_metrics(g_rows["now"]),
+                "relaxed": step_metrics(g_rows["relaxed"]),
+                "jev": step_metrics(g_rows["jev"]) if jev else None,
+            },
+            "import_right_proxy": {"n": g_e2e["n"], "now": g_e2e["now"], "relaxed": g_e2e["relaxed"],
+                                   "jev": g_e2e["jev"] if jev else None},
+        } if gold_posts else None,
         "latency_ms": {
             "now_gate_per_decision": quantiles(lat_now_gate),
             "now_step_per_decision": quantiles(lat_now_step),
@@ -596,10 +650,43 @@ def markdown(r: dict) -> str:
         "",
         f"Ground truth: gate labels from {gt['gate_labels']['gold']} gold files and {gt['gate_labels']['report']} "
         f"report grades ({gt['gate_positive']} recipe, {gt['gate_negative']} not); step labels "
-        f"{gt['step_labels']['gold']} gold, {gt['step_labels']['silver']} silver (the report's relaxed rule). "
+        f"{gt['step_labels']['gold']} gold, {gt['step_labels']['gold_overlap']} by overlap with gold steps, "
+        f"{gt['step_labels']['silver']} silver (the report's relaxed rule). "
         f"Today's gate matches the recorded run on {g['now_matches_recorded_run']} extractions. "
         "Today's ingredient check is used on both sides.",
     ]
+    go = r.get("gold_only")
+    if go:
+        gg, gs, ge = go["gate"], go["steps"], go["import_right_proxy"]
+
+        def gate_cell(m):
+            return "n/a" if not m else f"{m['tp']} / {m['fp']} / {m['fn']} / {m['tn']}"
+
+        def step_cells(key):
+            return " | ".join("n/a" if not gs[k] else str(gs[k][key]) for k in ("now", "relaxed", "jev"))
+
+        def pct_cells(key):
+            return " | ".join("n/a" if not gs[k] else fmt(gs[k][key], "%") for k in ("now", "relaxed", "jev"))
+
+        lines += [
+            "",
+            f"### Gold-labelled posts only ({go['posts']} posts)",
+            "",
+            "The relaxed rule changes only the step check; it uses today's gate and ingredient check.",
+            "",
+            "| Decision | Metric | Today | Relaxed rule | Jev |",
+            "|---|---|---|---|---|",
+            f"| Gate | TP / FP / FN / TN | {gate_cell(gg['now'])} | {gate_cell(gg['now'])} | {gate_cell(gg['jev'])} |",
+            f"| Steps | supported steps (of {gs['now']['n']}) | {gs['now']['supported']} | {gs['now']['supported']} | "
+            + ("n/a" if not gs["jev"] else f"{gs['jev']['supported']} (of {gs['jev']['n']} answered)") + " |",
+            f"| Steps | supported steps kept | {step_cells('kept_correct')} |",
+            f"| Steps | supported steps wrongly dropped | {step_cells('wrongly_dropped')} |",
+            f"| Steps | unsupported steps wrongly kept | {step_cells('wrongly_kept')} |",
+            f"| Steps | unsupported steps dropped | {step_cells('rightly_dropped')} |",
+            f"| Steps | recall | {pct_cells('recall_pct')} |",
+            f"| Steps | precision | {pct_cells('precision_pct')} |",
+            f"| End to end | imports right (proxy) of {ge['n']} | {ge['now']} | {ge['relaxed']} | {fmt(ge['jev'])} |",
+        ]
     if s["jev_threshold_sweep"]:
         lines += ["", "| Jev step threshold | kept correct | wrongly dropped | wrongly kept |", "|---|---|---|---|"]
         for t, m in s["jev_threshold_sweep"].items():
