@@ -1,7 +1,8 @@
 name: Trove iOS compile
 
 # Compiles Trove for the simulator at a trove-app ref, with no signing, no Apple
-# key and no backend, and runs the MunchMatching package tests. The quickest
+# key and no backend, runs the MunchMatching package tests, and checks that the
+# built app's name (what the sign-in prompt shows) is Trove in every language. The quickest
 # answer to "does this branch build?" for agents that have no Mac.
 #
 # This repository is public and trove-app is private: the build log stays on the
@@ -30,6 +31,7 @@ on:
       - .github/workflows/ios-compile.yml
       - .github/actions/fetch-source/**
       - tools/report.py
+      - tools/check_app_name.sh
 
 concurrency:
   # By pull request or run, never by branch name: a group's name can show in this public log.
@@ -129,7 +131,13 @@ jobs:
             grep -E "error: |failed \(" "$RUNNER_TEMP/private/swift-test.log" | grep -v '^/' | sed -E 's/^/- /' | head -20 >> "$RUNNER_TEMP/private/errors.md" || true
             [ -s "$RUNNER_TEMP/private/errors.md" ] || echo "- MunchMatching tests failed." > "$RUNNER_TEMP/private/errors.md"
           fi
-          [ $status -eq 0 ] && [ $tests -eq 0 ] && echo "ok=true" >> "$GITHUB_OUTPUT" || echo "ok=false" >> "$GITHUB_OUTPUT"
+          # The name the sign-in prompt shows (CFBundleName, localized): Trove, never the product name Munch.
+          names=0
+          if [ $status -eq 0 ]; then
+            app="$(find "$RUNNER_TEMP/derived/Build/Products" -maxdepth 2 -name Munch.app -type d 2>/dev/null | head -1)"
+            bash "$GITHUB_WORKSPACE/tools/check_app_name.sh" "$app" "$RUNNER_TEMP/private/errors.md" || names=1
+          fi
+          [ $status -eq 0 ] && [ $tests -eq 0 ] && [ $names -eq 0 ] && echo "ok=true" >> "$GITHUB_OUTPUT" || echo "ok=false" >> "$GITHUB_OUTPUT"
 
       - name: Mint a token that can only comment on the trove-app pull request
         id: comment-token
