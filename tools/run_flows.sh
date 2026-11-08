@@ -30,7 +30,7 @@ echo "$platform: setup before the first flow took $SECONDS s"
 # One Maestro run per flow, in file order (01-, 02-, ...), each capped at $flow_limit seconds: Maestro's iOS driver
 # sometimes hangs (often while stopping a recording), and a hang should cost one attempt, not the whole job.
 # A healthy flow takes 1-5 minutes, driver startup included.
-flow_limit=480
+flow_limit=600
 # Runner failures (below) are retried on a fresh device: up to 2 retries for one flow, 4 for the whole run.
 # Flow failures (a report with a failed step) are never retried.
 flow_retries=2; run_retries=4
@@ -38,8 +38,9 @@ run_flow() {  # <flow file>
   local name; name="$(basename "$1" .yaml)"
   # The timeout runs Maestro in its own process group and stops the whole group, so no xcodebuild, XCTest
   # runner or recorder outlives a hung attempt and holds the driver for the next one. Exit 142 means timed out.
-  # The iOS driver (an XCTest runner) can be slow to come up on a busy runner: give it three minutes.
-  MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 perl -e '
+  # The iOS driver (an XCTest runner) can be slow to come up on a busy runner: give it five minutes
+  # (three was not enough on Nov 8: IOSDriverTimeoutException three times in a row on two runs).
+  MAESTRO_DRIVER_STARTUP_TIMEOUT=300000 perl -e '
     my $limit = shift; my $pid = fork // die "fork: $!";
     if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
     $SIG{ALRM} = sub {
