@@ -1,0 +1,65 @@
+name: Claude code review
+
+# Reviews every ready pull request with Claude Code's /code-review plugin and
+# posts the findings as inline comments on the pull request. The cloud lane
+# reads them, fixes what's real, and merges once the review and checks are
+# clean. Drafts are skipped; a new push cancels the review of the old one.
+#
+# Needs: the Claude GitHub App on this repository, and the repository secret
+# CLAUDE_CODE_OAUTH_TOKEN. The action and the plugin are pinned to commits
+# (the same ones May-Assistant/may-releases uses).
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the pinned Claude Code plugin marketplace
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: anthropics/claude-code
+          ref: 0d7f14dd352fa67affd4e172eb1b6f524dbd709e
+          path: .claude-marketplace/claude-code
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Claude Code reserves "claude-code-plugins" for the anthropics GitHub source and
+      # refuses it from a local path, so the pinned copy gets its own name.
+      - name: Rename the pinned plugin marketplace
+        run: |
+          python3 -I -S -B -c '
+          import json, sys
+          path = sys.argv[1]
+          data = json.load(open(path))
+          assert data["name"] == "claude-code-plugins", data["name"]
+          data["name"] = "trove-pinned-claude-code"
+          json.dump(data, open(path, "w"), indent=2)
+          ' .claude-marketplace/claude-code/.claude-plugin/marketplace.json
+
+      - name: Review
+        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: ${{ github.workspace }}/.claude-marketplace/claude-code
+          plugins: 'code-review@trove-pinned-claude-code'
+          prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
