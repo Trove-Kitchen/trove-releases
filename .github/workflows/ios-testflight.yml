@@ -154,6 +154,13 @@ jobs:
           HAS_STAGING_URL: ${{ secrets.STAGING_SUPABASE_URL != '' }}
           HAS_STAGING_ANON: ${{ secrets.STAGING_SUPABASE_ANON_KEY != '' }}
           HAS_STAGING_RESOLVER: ${{ secrets.STAGING_RESOLVER_BASE_URL != '' }}
+          # Analytics keys (trove-app #524) go into production builds only: staging
+          # TestFlight builds must not report to PostHog or Meta (Samuel, Nov 18).
+          # Empty keys leave both SDKs off.
+          POSTHOG_PROJECT_KEY: ${{ inputs.backend == 'production' && secrets.POSTHOG_PROJECT_KEY || '' }}
+          POSTHOG_HOST: ${{ inputs.backend == 'production' && secrets.POSTHOG_HOST || '' }}
+          META_APP_ID: ${{ inputs.backend == 'production' && secrets.META_APP_ID || '' }}
+          META_CLIENT_TOKEN: ${{ inputs.backend == 'production' && secrets.META_CLIENT_TOKEN || '' }}
         run: |
           echo "Backend: ${{ inputs.backend }}"
           # `a && b || c` falls back to production when a staging secret is
@@ -181,8 +188,15 @@ jobs:
           text += setting("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
           text += setting("SUPABASE_ANON_KEY", os.environ.get("SUPABASE_ANON_KEY", ""))
           text += setting("RESOLVER_BASE_URL", resolver)
+          text += setting("POSTHOG_PROJECT_KEY", os.environ.get("POSTHOG_PROJECT_KEY", ""))
+          text += setting("POSTHOG_HOST", os.environ.get("POSTHOG_HOST", ""))
+          text += setting("META_APP_ID", os.environ.get("META_APP_ID", ""))
+          text += setting("META_CLIENT_TOKEN", os.environ.get("META_CLIENT_TOKEN", ""))
           open("Munch/Supabase.xcconfig", "w", encoding="utf-8").write(text)
           print("Wrote Munch/Supabase.xcconfig")
+          # Names only: whether analytics is on, never the values.
+          print("Analytics:", "on" if os.environ.get("POSTHOG_PROJECT_KEY") else "off",
+                "| Meta:", "on" if os.environ.get("META_APP_ID") and os.environ.get("META_CLIENT_TOKEN") else "off")
           PY
 
       - name: Point the project at the checked-out grocery package
