@@ -46,6 +46,16 @@ on:
         type: choice
         options: [production, staging]
         default: production
+      analytics:
+        description: Build with PostHog product analytics (production backend only). Off until the privacy review approves it (trove-app #317, #525).
+        required: false
+        type: boolean
+        default: false
+      meta_measurement:
+        description: Build with Meta ad measurement (production backend only). Off until the consent review approves it (trove-app #317, #525).
+        required: false
+        type: boolean
+        default: false
       validate_with_play:
         description: On a dry run, also sign and have Play validate the edit (runs in trove-android, main only)
         required: false
@@ -245,6 +255,15 @@ jobs:
           UPLOAD_STORE_PASSWORD: ${{ secrets.TROVE_ANDROID_UPLOAD_STORE_PASSWORD }}
           UPLOAD_KEY_ALIAS: ${{ secrets.TROVE_ANDROID_UPLOAD_KEY_ALIAS }}
           UPLOAD_KEY_PASSWORD: ${{ secrets.TROVE_ANDROID_UPLOAD_KEY_PASSWORD }}
+          # Analytics keys (trove-app #524) go only into production builds that opt in
+          # (inputs.analytics for PostHog, inputs.meta_measurement for Meta, both
+          # default false, trove-app #317): staging
+          # builds must not report to PostHog or Meta (Samuel, Nov 18).
+          # Empty keys leave both SDKs off.
+          POSTHOG_PROJECT_KEY: ${{ inputs.backend == 'production' && inputs.analytics && secrets.POSTHOG_PROJECT_KEY || '' }}
+          POSTHOG_HOST: ${{ inputs.backend == 'production' && inputs.analytics && secrets.POSTHOG_HOST || '' }}
+          META_APP_ID: ${{ inputs.backend == 'production' && inputs.meta_measurement && secrets.META_APP_ID || '' }}
+          META_CLIENT_TOKEN: ${{ inputs.backend == 'production' && inputs.meta_measurement && secrets.META_CLIENT_TOKEN || '' }}
         run: |
           echo "Backend: $BACKEND"
           # `a && b || c` falls back to production when a staging secret is empty.
@@ -262,13 +281,17 @@ jobs:
           def esc(v):  # java.util.Properties escaping
               return v.replace("\\", "\\\\").replace("\n", "\\n")
           keys = ["SUPABASE_URL", "SUPABASE_ANON_KEY", "UPLOAD_STORE_FILE",
-                  "UPLOAD_STORE_PASSWORD", "UPLOAD_KEY_ALIAS", "UPLOAD_KEY_PASSWORD"]
+                  "UPLOAD_STORE_PASSWORD", "UPLOAD_KEY_ALIAS", "UPLOAD_KEY_PASSWORD",
+                  "POSTHOG_PROJECT_KEY", "POSTHOG_HOST", "META_APP_ID", "META_CLIENT_TOKEN"]
           with open("local.properties", "w", encoding="utf-8") as f:
               f.write(f"sdk.dir={esc(os.environ['ANDROID_HOME'])}\n")
               for k in keys:
                   f.write(f"{k}={esc(os.environ.get(k, ''))}\n")
           os.chmod("local.properties", 0o600)
           print("Wrote local.properties")
+          # Names only: whether analytics is on, never the values.
+          print("Analytics:", "on" if os.environ.get("POSTHOG_PROJECT_KEY") else "off",
+                "| Meta:", "on" if os.environ.get("META_APP_ID") and os.environ.get("META_CLIENT_TOKEN") else "off")
           PY
 
       # Firebase Cloud Messaging (server push, trove-app #458): the app applies the
