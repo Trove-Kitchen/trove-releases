@@ -245,6 +245,9 @@ jobs:
           UPLOAD_STORE_PASSWORD: ${{ secrets.TROVE_ANDROID_UPLOAD_STORE_PASSWORD }}
           UPLOAD_KEY_ALIAS: ${{ secrets.TROVE_ANDROID_UPLOAD_KEY_ALIAS }}
           UPLOAD_KEY_PASSWORD: ${{ secrets.TROVE_ANDROID_UPLOAD_KEY_PASSWORD }}
+          # Amazon Associates tracking id for the Amazon Fresh link-out (trove-app
+          # PlanScreens.kt). Production builds only. Empty = untagged links.
+          AMAZON_ASSOCIATES_TAG: ${{ inputs.backend == 'production' && secrets.AMAZON_ASSOCIATES_TAG || '' }}
         run: |
           echo "Backend: $BACKEND"
           # `a && b || c` falls back to production when a staging secret is empty.
@@ -262,13 +265,15 @@ jobs:
           def esc(v):  # java.util.Properties escaping
               return v.replace("\\", "\\\\").replace("\n", "\\n")
           keys = ["SUPABASE_URL", "SUPABASE_ANON_KEY", "UPLOAD_STORE_FILE",
-                  "UPLOAD_STORE_PASSWORD", "UPLOAD_KEY_ALIAS", "UPLOAD_KEY_PASSWORD"]
+                  "UPLOAD_STORE_PASSWORD", "UPLOAD_KEY_ALIAS", "UPLOAD_KEY_PASSWORD",
+                  "AMAZON_ASSOCIATES_TAG"]
           with open("local.properties", "w", encoding="utf-8") as f:
               f.write(f"sdk.dir={esc(os.environ['ANDROID_HOME'])}\n")
               for k in keys:
                   f.write(f"{k}={esc(os.environ.get(k, ''))}\n")
           os.chmod("local.properties", 0o600)
           print("Wrote local.properties")
+          print("Amazon Associates tag:", "set" if os.environ.get("AMAZON_ASSOCIATES_TAG", "").strip() else "not set (links untagged)")
           PY
 
       # Firebase Cloud Messaging (server push, trove-app #458): the app applies the
