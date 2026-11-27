@@ -1,0 +1,133 @@
+name: Trove production import probe
+
+# Can the PRODUCTION video resolver still reach Instagram, TikTok and YouTube?
+# Calls POST /preview with the resolver's service token for each link in trove-app's
+# scripts/import-check/links.json: metadata only, no account, no download, nothing
+# stored. Then reads GET /admin/proxy (trove-app #556). Daily, and on demand.
+# Social imports failed silently for a week when the proxy ran out (trove-app #546).
+#
+# This repository is public: the log shows platforms and pass/fail only. The links
+# and error codes go to a trove-app issue: pr_number when given, else #349 on failure.
+#
+# Environment trove-production-probe (no reviewer): RESOLVER_PRODUCTION_SERVICE_TOKEN.
+
+run-name: 'Trove production import probe'
+
+on:
+  schedule:
+    - cron: '41 15 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: trove-app branch, tag or full commit for the link list
+        required: true
+        default: main
+        type: string
+      pr_number:
+        description: trove-app issue or pull request to post the report on (optional; failures also go to #349)
+        required: false
+        type: string
+
+concurrency:
+  group: trove-production-import-probe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    environment: trove-production-probe
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Mint a read-only token for the source
+        id: source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-contents: read
+
+      - name: Resolve the commit for the link list, printing no branch name
+        id: commit
+        env:
+          TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          ref="$(jq -r '.inputs.ref // "main"' "$GITHUB_EVENT_PATH")"
+          if printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+            sha="$ref"
+          else
+            printf '%s' "$ref" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$' || { echo "ref must be a branch, tag or full commit"; exit 1; }
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+            echo "::add-mask::$auth"
+            sha="$(git -c http.extraheader="$auth" ls-remote https://github.com/Trove-Kitchen/trove-app.git \
+              "refs/heads/$ref" "refs/tags/$ref" | awk 'NR == 1 { print $1 }')"
+            [ -n "$sha" ] || { echo "ref is not a trove-app branch, tag or full commit"; exit 1; }
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - id: source
+        uses: ./.github/actions/fetch-source
+        with:
+          ref: ${{ steps.commit.outputs.sha }}
+          token: ${{ steps.source-token.outputs.token }}
+
+      - name: Probe production
+        id: probe
+        env:
+          RESOLVER_SERVICE_TOKEN: ${{ secrets.RESOLVER_PRODUCTION_SERVICE_TOKEN }}
+        run: |
+          [ -n "$RESOLVER_SERVICE_TOKEN" ] || { echo "Missing RESOLVER_PRODUCTION_SERVICE_TOKEN in trove-production-probe"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/private"
+          set +e
+          python3 -I tools/prod_probe.py "$RUNNER_TEMP/trove-source/scripts/import-check/links.json" \
+            --report "$RUNNER_TEMP/private/report.md"
+          code=$?
+          set -e
+          [ -s "$RUNNER_TEMP/private/report.md" ] || echo "- The probe stopped before writing a report (exit $code)." > "$RUNNER_TEMP/private/report.md"
+          echo "ok=$([ $code -eq 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Choose where the report goes
+        id: target
+        env:
+          PR: ${{ inputs.pr_number }}
+          OK: ${{ steps.probe.outputs.ok }}
+        run: |
+          if [ -n "$PR" ]; then echo "issue=$PR" >> "$GITHUB_OUTPUT"
+          elif [ "$OK" != "true" ]; then echo "issue=349" >> "$GITHUB_OUTPUT"
+          else echo "issue=" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Mint a token that can only comment on trove-app
+        id: comment-token
+        if: steps.target.outputs.issue != ''
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.TROVE_CI_APP_ID }}
+          private-key: ${{ secrets.TROVE_CI_APP_PRIVATE_KEY }}
+          owner: Trove-Kitchen
+          repositories: trove-app
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Post the report on trove-app, never in this log
+        if: steps.target.outputs.issue != ''
+        env:
+          TROVE_PR_COMMENT_TOKEN: ${{ steps.comment-token.outputs.token }}
+          ISSUE: ${{ steps.target.outputs.issue }}
+          SHA: ${{ steps.source.outputs.sha }}
+          VERDICT: ${{ steps.probe.outputs.ok == 'true' && 'passed' || 'failed' }}
+        run: python3 -I tools/report.py post "Production import probe" "$RUNNER_TEMP/private/report.md" "$ISSUE" "$SHA" "$VERDICT"
+
+      - name: Fail when production can't reach a platform
+        run: '[ "${{ steps.probe.outputs.ok }}" = "true" ]'
+
+      - name: Remove private source and reports
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/trove-source" "$RUNNER_TEMP/private"
