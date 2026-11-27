@@ -158,6 +158,13 @@ jobs:
           # Munch/StoreModel.swift). Production builds only: testers buying through
           # their own build's links would break Associates rules. Empty = untagged links.
           AMAZON_ASSOCIATES_TAG: ${{ inputs.backend == 'production' && secrets.AMAZON_ASSOCIATES_TAG || '' }}
+          # Product analytics (PostHog) and install attribution (Meta), trove-app docs/analytics.md.
+          # Production builds only, so staging and tester traffic stays out of the numbers.
+          # Empty = both SDKs stay off (Analytics.swift), nothing is stored or sent.
+          POSTHOG_PROJECT_KEY: ${{ inputs.backend == 'production' && secrets.POSTHOG_PROJECT_KEY || '' }}
+          POSTHOG_HOST: ${{ inputs.backend == 'production' && secrets.POSTHOG_HOST || '' }}
+          META_APP_ID: ${{ inputs.backend == 'production' && secrets.META_APP_ID || '' }}
+          META_CLIENT_TOKEN: ${{ inputs.backend == 'production' && secrets.META_CLIENT_TOKEN || '' }}
         run: |
           echo "Backend: ${{ inputs.backend }}"
           # `a && b || c` falls back to production when a staging secret is
@@ -186,9 +193,13 @@ jobs:
           text += setting("SUPABASE_ANON_KEY", os.environ.get("SUPABASE_ANON_KEY", ""))
           text += setting("RESOLVER_BASE_URL", resolver)
           text += setting("AMAZON_ASSOCIATES_TAG", os.environ.get("AMAZON_ASSOCIATES_TAG", "").strip())
+          for name in ("POSTHOG_PROJECT_KEY", "POSTHOG_HOST", "META_APP_ID", "META_CLIENT_TOKEN"):
+              text += setting(name, os.environ.get(name, "").strip())
           open("Munch/Supabase.xcconfig", "w", encoding="utf-8").write(text)
           print("Wrote Munch/Supabase.xcconfig")
           print("Amazon Associates tag:", "set" if os.environ.get("AMAZON_ASSOCIATES_TAG", "").strip() else "not set (links untagged)")
+          print("PostHog:", "on" if os.environ.get("POSTHOG_PROJECT_KEY", "").strip() else "off (no key in this build)")
+          print("Meta attribution:", "on" if os.environ.get("META_APP_ID", "").strip() and os.environ.get("META_CLIENT_TOKEN", "").strip() else "off")
           PY
 
       - name: Point the project at the checked-out grocery package
