@@ -57,7 +57,7 @@ jobs:
         with:
           node-version: '22'
 
-      - run: sudo apt-get install -y -qq age > /dev/null
+      - run: sudo apt-get update -qq > /dev/null && sudo apt-get install -y -qq age > /dev/null
 
       - name: Mint a read-only token for the source
         id: source-token
@@ -164,7 +164,7 @@ jobs:
           owner: Trove-Kitchen
           repositories: trove-renders
 
-      - run: sudo apt-get install -y -qq age ffmpeg > /dev/null
+      - run: sudo apt-get update -qq > /dev/null && sudo apt-get install -y -qq age ffmpeg > /dev/null
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
